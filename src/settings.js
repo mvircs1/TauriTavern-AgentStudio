@@ -9,6 +9,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
     studioTools: true,
     loreReadTools: true,
     loreWriteTools: true,
+    systemTools: true,
     backupsPerBook: 20,
 });
 
@@ -66,6 +67,10 @@ export function renderSettingsDrawer({ bridge, panel, storageKind }) {
                 <label class="checkbox_label">
                     <input type="checkbox" data-setting="loreWriteTools">
                     <span>Lorebooks: criar, editar e excluir entradas; criar lorebooks</span>
+                </label>
+                <label class="checkbox_label">
+                    <input type="checkbox" data-setting="systemTools">
+                    <span>Sistema: ler e editar fichas, Vida/Mana e testes de d20</span>
                 </label>
                 <div class="agst-settings-row">
                     <label for="agst_backups_per_book">Backups guardados por lorebook</label>

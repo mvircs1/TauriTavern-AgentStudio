@@ -13,6 +13,8 @@ import {
     normalizePath,
     parentPath,
 } from './util.js';
+import { SystemView } from './system-panel.js';
+import { confirmDialog, downloadText, promptText, renderMarkdown } from './ui.js';
 
 const REASON_LABELS = {
     create_entry: 'antes de o Agent criar uma entrada',
@@ -28,56 +30,18 @@ const TOOL_LABELS = {
     lorebook_list: 'Lorebooks', lorebook_read: 'Ler lorebook', lorebook_search: 'Buscar em lorebooks',
     lorebook_create_entry: 'Criar entrada', lorebook_update_entry: 'Editar entrada',
     lorebook_delete_entry: 'Excluir entrada', lorebook_create_book: 'Criar lorebook',
+    system_info: 'Ver sistema', system_roll: 'Teste', sheet_list: 'Fichas', sheet_read: 'Ler ficha',
+    sheet_create: 'Criar ficha', sheet_update: 'Editar ficha', sheet_resource: 'Recurso', sheet_delete: 'Excluir ficha',
+    ui_roll: 'Teste (você)',
 };
 
-function context() {
-    return SillyTavern.getContext();
-}
-
-async function promptText(title, defaultValue = '', hint = '') {
-    const { Popup } = context();
-    if (Popup?.show?.input) {
-        const value = await Popup.show.input(title, hint, defaultValue);
-        return typeof value === 'string' ? value : null;
-    }
-    return window.prompt(hint ? `${title}\n${hint}` : title, defaultValue);
-}
-
-async function confirmDialog(title, text) {
-    const { Popup, POPUP_RESULT } = context();
-    if (Popup?.show?.confirm) {
-        const result = await Popup.show.confirm(title, text);
-        return POPUP_RESULT ? result === POPUP_RESULT.AFFIRMATIVE : Boolean(result);
-    }
-    return window.confirm(text ? `${title}\n\n${text}` : title);
-}
-
-function renderMarkdown(text) {
-    const libs = globalThis.SillyTavern?.libs ?? {};
-    if (libs.showdown?.Converter && libs.DOMPurify?.sanitize) {
-        const converter = new libs.showdown.Converter({ tables: true, strikethrough: true, simpleLineBreaks: true });
-        return libs.DOMPurify.sanitize(converter.makeHtml(text));
-    }
-    return `<pre>${escapeHtml(text)}</pre>`;
-}
-
-function downloadText(fileName, text) {
-    const blob = new Blob([text], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement('a');
-    anchor.href = url;
-    anchor.download = fileName;
-    document.body.append(anchor);
-    anchor.click();
-    anchor.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 10_000);
-}
-
 export class StudioPanel {
-    constructor({ fs, lore, activity }) {
+    constructor({ fs, lore, activity, system }) {
         this.fs = fs;
         this.lore = lore;
         this.activity = activity;
+        this.system = system;
+        this.systemView = null;
         this.root = null;
         this.tab = 'files';
         this.data = { files: [], folders: [], trashCount: 0 };
@@ -140,6 +104,7 @@ export class StudioPanel {
                     <div class="agst-title"><i class="fa-solid fa-folder-tree"></i><span>Agent Studio</span></div>
                     <nav class="agst-tabs">
                         <button type="button" class="agst-tab" data-tab="files"><i class="fa-solid fa-folder"></i><span>Arquivos</span></button>
+                        <button type="button" class="agst-tab" data-tab="system"><i class="fa-solid fa-dice-d20"></i><span>Sistema</span></button>
                         <button type="button" class="agst-tab" data-tab="backups"><i class="fa-solid fa-clock-rotate-left"></i><span>Backups</span></button>
                         <button type="button" class="agst-tab" data-tab="activity"><i class="fa-solid fa-list-check"></i><span>Atividade</span></button>
                         <button type="button" class="agst-tab" data-tab="trash"><i class="fa-solid fa-trash-can"></i><span>Lixeira</span></button>
@@ -185,6 +150,8 @@ export class StudioPanel {
                     </div>
                 </section>
 
+                <section class="agst-panel agst-system" data-panel="system" hidden></section>
+
                 <section class="agst-panel agst-list-panel" data-panel="backups" hidden>
                     <div class="agst-list-toolbar">
                         <select class="text_pole" data-role="backup-book"></select>
@@ -225,6 +192,17 @@ export class StudioPanel {
         });
         this.$('textarea').addEventListener('input', () => this.setDirty(true));
 
+        this.systemView = new SystemView({
+            system: this.system,
+            lore: this.lore,
+            activity: this.activity,
+            container: root.querySelector('[data-panel="system"]'),
+        });
+        this.systemView.mount();
+        this.system.onChange(() => {
+            if (this.isOpen() && this.tab === 'system') this.systemView.refresh();
+        });
+
         this.fs.onChange(() => this.scheduleRefresh());
         this.lore.onChange(change => {
             if (change.type === 'backup' && this.isOpen() && this.tab === 'backups') this.renderBackups();
@@ -248,6 +226,7 @@ export class StudioPanel {
         }
         const render = {
             files: () => this.refreshFiles(),
+            system: () => this.systemView.render(),
             backups: () => this.renderBackups(),
             activity: () => this.renderActivity(),
             trash: () => this.renderTrash(),

@@ -49,6 +49,9 @@ export function assertPortableSchema(schema, path = 'inputSchema') {
     }
     if (typeof schema.type !== 'string') throw new Error(`${path}: "type" precisa ser uma string`);
     if (schema.enum && schema.type !== 'string') throw new Error(`${path}: enum só em strings`);
+    if (schema.type === 'object' && !Object.keys(schema.properties ?? {}).length) {
+        throw new Error(`${path}: objeto sem properties (o Gemini recusa)`);
+    }
     if (schema.properties) {
         for (const [name, child] of Object.entries(schema.properties)) assertPortableSchema(child, `${path}.${name}`);
     }
@@ -150,9 +153,19 @@ export function createAgentMock() {
 
 export function createSillyTavernMock() {
     const books = new Map();
-    const stats = { saves: 0, editorReloads: 0 };
+    const stats = { saves: 0, editorReloads: 0, metadataSaves: 0 };
     const extensionSettings = {};
+    const chats = new Map([['chat-1', { world_info: 'Chat Book' }]]);
+    const state = { chatId: 'chat-1' };
     const context = {
+        name1: 'Aria',
+        getCurrentChatId: () => state.chatId,
+        get chatMetadata() {
+            return state.chatId ? chats.get(state.chatId) : undefined;
+        },
+        async saveMetadata() {
+            stats.metadataSaves++;
+        },
         extensionSettings,
         saveSettingsDebounced() {},
         getWorldInfoNames: () => [...books.keys()],
@@ -169,11 +182,19 @@ export function createSillyTavernMock() {
         reloadWorldInfoEditor() {
             stats.editorReloads++;
         },
-        characters: [{ name: 'Lyra', avatar: 'Lyra.png', data: { extensions: { world: 'Lyra Lore' } } }],
+        characters: [
+            { name: 'Lyra', avatar: 'Lyra.png', data: { extensions: { world: 'Lyra Lore' } } },
+            { name: 'Kael', avatar: 'Kael.png', data: { extensions: {} } },
+        ],
         characterId: 0,
-        chatMetadata: { world_info: 'Chat Book' },
         powerUserSettings: {},
         getRequestHeaders: () => ({ 'Content-Type': 'application/json' }),
     };
-    return { context, books, stats, SillyTavern: { getContext: () => context, libs: {} } };
+    /** Simula abrir outro chat (opcionalmente de outro personagem). */
+    function switchChat(chatId, { characterId = context.characterId, metadata = {} } = {}) {
+        if (!chats.has(chatId)) chats.set(chatId, metadata);
+        state.chatId = chatId;
+        context.characterId = characterId;
+    }
+    return { context, books, stats, chats, switchChat, SillyTavern: { getContext: () => context, libs: {} } };
 }

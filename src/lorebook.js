@@ -237,6 +237,8 @@ export class LorebookService {
         this.backedUpInRun = new Set();
         this.worldInfoModule = undefined;
         this.listeners = new Set();
+        /** Preenchido pelo sistema de fichas: (book) => Map<uid, nome da ficha vinculada>. */
+        this.sheetLinksForBook = null;
     }
 
     // ---------- infraestrutura ----------
@@ -362,6 +364,28 @@ export class LorebookService {
         };
     }
 
+    /** Nomes dos lorebooks ativos no chat atual (global, personagem, chat, persona). */
+    async activeBookNames() {
+        const links = await this.linkInfo();
+        const names = new Set([...links.global, ...links.characterExtra]);
+        for (const name of [links.characterPrimary, links.chat, links.persona]) {
+            if (name) names.add(name);
+        }
+        return names;
+    }
+
+    /** Confirma que a entrada existe e devolve { book, uid, title }. */
+    describeEntry(book, uid) {
+        return this.enqueue(async () => {
+            const name = await this.requireBook(book);
+            const data = await this.context().loadWorldInfo(name);
+            const key = String(Math.trunc(Number(uid)));
+            const entry = data?.entries?.[key];
+            if (!entry) throw new Error(`Entry uid ${uid} not found in "${name}". Use lorebook_read to see the uids.`);
+            return { book: name, uid: Number(key), title: entryTitle(entry) };
+        });
+    }
+
     // ---------- leitura ----------
 
     list({ includeCounts = false } = {}) {
@@ -421,6 +445,12 @@ export class LorebookService {
             const start = clampInt(offset, { min: 0, max: Math.max(entries.length, 0), fallback: 0 });
             const count = clampInt(limit, { min: 1, max: 300, fallback: 100 });
             const page = entries.slice(start, start + count).map(summarizeEntry);
+            const sheets = this.sheetLinksForBook?.(name);
+            if (sheets?.size) {
+                for (const summary of page) {
+                    if (sheets.has(summary.uid)) summary.sheet = sheets.get(summary.uid);
+                }
+            }
             const response = { book: name, total_entries: entries.length, offset: start, entries: page };
             if (start + count < entries.length) response.next_offset = start + count;
             return response;

@@ -13,7 +13,56 @@ export const TOOL_GROUPS = Object.freeze({
     studio: 'studioTools',
     loreRead: 'loreReadTools',
     loreWrite: 'loreWriteTools',
+    system: 'systemTools',
 });
+
+const SHEET_PARAM = { type: 'string', description: 'Sheet name or id (from sheet_list). Omit for the player\'s sheet.' };
+const ATTRIBUTE_VALUES = {
+    type: 'array',
+    description: 'Attribute scores to set.',
+    items: {
+        type: 'object',
+        properties: {
+            name: { type: 'string', description: 'Attribute name (as in system_info).' },
+            score: { type: 'integer', description: 'Score; 10 is average (modifier +0).' },
+        },
+        required: ['name', 'score'],
+    },
+};
+const SKILL_VALUES = {
+    type: 'array',
+    description: 'Skill bonuses to set. The bonus is added to the attribute modifier (e.g. 2 = trained, 4 = expert, 0 = untrained).',
+    items: {
+        type: 'object',
+        properties: {
+            name: { type: 'string', description: 'Skill name (as in system_info).' },
+            bonus: { type: 'integer', description: 'Skill bonus.' },
+        },
+        required: ['name', 'bonus'],
+    },
+};
+const RESOURCE_VALUES = {
+    type: 'array',
+    description: 'Resource values to set (e.g. raise max Vida).',
+    items: {
+        type: 'object',
+        properties: {
+            name: { type: 'string', description: 'Resource name (e.g. Vida, Mana).' },
+            max: { type: 'integer', description: 'New maximum.' },
+            current: { type: 'integer', description: 'New current value (kept between 0 and max).' },
+        },
+        required: ['name'],
+    },
+};
+const LORE_LINK = {
+    type: 'object',
+    description: 'Lorebook entry of this character. A linked sheet persists outside this chat and appears in every chat where that lorebook is active.',
+    properties: {
+        book: { type: 'string', description: 'Lorebook name.' },
+        uid: { type: 'integer', description: 'Entry uid (from lorebook_read or lorebook_search).' },
+    },
+    required: ['book', 'uid'],
+};
 
 const ENTRY_FIELDS_SCHEMA = {
     type: 'object',
@@ -55,7 +104,7 @@ const STUDIO_INTRO = 'The Agent Studio is the user\'s persistent, GLOBAL file sp
 /**
  * @param {{ fs: import('./studio-fs.js').StudioFS, lore: import('./lorebook.js').LorebookService }} services
  */
-export function buildToolDefinitions({ fs, lore }) {
+export function buildToolDefinitions({ fs, lore, system }) {
     return [
         // ---------- estúdio ----------
         {
@@ -298,6 +347,140 @@ export function buildToolDefinitions({ fs, lore }) {
             run: args => lore.createBook({ name: args.name }),
             summarize: (args, result) => `Criou o lorebook "${result.book}"`,
         },
+
+        // ---------- sistema e fichas ----------
+        {
+            name: 'system_info',
+            group: TOOL_GROUPS.system,
+            description: 'Describe the user\'s RPG system: attributes, skills (each tied to an attribute) and resources (like Vida/HP and Mana), with the descriptions the user wrote, plus the rules (D&D-style modifiers, d20 checks, no levels or XP). Read it once before working with sheets or checks.',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    section: { type: 'string', enum: ['all', 'rules', 'attributes', 'skills', 'resources'], description: 'Part to return (default "all").' },
+                },
+            },
+            run: args => system.systemInfo({ section: args.section }),
+            summarize: () => 'Consultou as regras do sistema',
+        },
+        {
+            name: 'sheet_list',
+            group: TOOL_GROUPS.system,
+            description: 'List the character sheets available in this chat with their resources: the player\'s sheet (the user\'s character; location "player"), NPC sheets of this chat ("chat"), and NPC sheets linked to entries of lorebooks active in this chat ("lorebook").',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    location: { type: 'string', enum: ['all', 'player', 'chat', 'lorebook'], description: 'Filter by where the sheet lives (default "all").' },
+                },
+            },
+            run: args => system.listSheets({ location: args.location }),
+            summarize: (args, result) => `Listou ${result.sheets.length} ficha(s)`,
+        },
+        {
+            name: 'sheet_read',
+            group: TOOL_GROUPS.system,
+            description: 'Read a character sheet in full: attribute scores and modifiers, skill bonuses and totals, resources (current/max) and notes.',
+            inputSchema: { type: 'object', properties: { sheet: SHEET_PARAM } },
+            run: args => system.readSheet(args.sheet),
+            summarize: (args, result) => `Leu a ficha de ${result.name}`,
+        },
+        {
+            name: 'sheet_create',
+            group: TOOL_GROUPS.system,
+            description: 'Create an NPC sheet (companion, rival, enemy). By default it belongs to this chat only. For a recurring character that has a lorebook entry, pass link_lorebook so the sheet persists in every chat where that lorebook is active. Values you omit use the defaults (score 10, resources at their default maximum).',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    name: { type: 'string', description: 'Character name.' },
+                    notes: { type: 'string', description: 'Short notes (equipment, conditions, traits).' },
+                    attributes: ATTRIBUTE_VALUES,
+                    skills: SKILL_VALUES,
+                    resources: RESOURCE_VALUES,
+                    link_lorebook: LORE_LINK,
+                },
+                required: ['name'],
+            },
+            run: args => system.createSheet({
+                name: args.name,
+                notes: args.notes,
+                attributes: args.attributes,
+                skills: args.skills,
+                resources: args.resources,
+                linkLorebook: args.link_lorebook,
+            }),
+            summarize: (args, result) => `Criou a ficha de ${result.name}${result.location === 'lorebook' ? ' (vinculada a lorebook)' : ''}`,
+        },
+        {
+            name: 'sheet_update',
+            group: TOOL_GROUPS.system,
+            description: 'Change a sheet: name, notes, attribute scores, skill bonuses, resource maximum/current; link it to a lorebook entry (link_lorebook) or move it back into this chat (unlink_lorebook). For damage, healing or spending during play prefer sheet_resource.',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    sheet: SHEET_PARAM,
+                    name: { type: 'string', description: 'New name.' },
+                    notes: { type: 'string', description: 'New notes (replaces the old ones).' },
+                    attributes: ATTRIBUTE_VALUES,
+                    skills: SKILL_VALUES,
+                    resources: RESOURCE_VALUES,
+                    link_lorebook: LORE_LINK,
+                    unlink_lorebook: { type: 'boolean', description: 'Move a lorebook-linked sheet back into this chat only.' },
+                },
+            },
+            run: args => system.updateSheet(args.sheet, {
+                name: args.name,
+                notes: args.notes,
+                attributes: args.attributes,
+                skills: args.skills,
+                resources: args.resources,
+                linkLorebook: args.link_lorebook,
+                unlinkLorebook: args.unlink_lorebook === true,
+            }),
+            summarize: (args, result) => `Editou a ficha de ${result.name}`,
+        },
+        {
+            name: 'sheet_resource',
+            group: TOOL_GROUPS.system,
+            description: 'Change a resource during play (e.g. Vida/HP, Mana): "delta" for damage, healing or spending (negative = lose, positive = recover) or "set" for an exact value. Kept between 0 and the maximum. Do it whenever the story causes damage, healing or resource use, so the sheet stays accurate.',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    sheet: SHEET_PARAM,
+                    resource: { type: 'string', description: 'Resource name, e.g. "Vida" or "Mana".' },
+                    delta: { type: 'integer', description: 'Change, e.g. -4 (damage) or 3 (healing).' },
+                    set: { type: 'integer', description: 'Exact new value (instead of delta).' },
+                },
+                required: ['resource'],
+            },
+            run: args => system.adjustResource(args.sheet, { resource: args.resource, delta: args.delta, set: args.set }),
+            summarize: (args, result) => `${result.resource} de ${result.sheet}: ${result.before} → ${result.after}/${result.max}`,
+        },
+        {
+            name: 'sheet_delete',
+            group: TOOL_GROUPS.system,
+            description: 'Delete an NPC sheet that is no longer needed (the player\'s sheet cannot be deleted).',
+            inputSchema: { type: 'object', properties: { sheet: { type: 'string', description: 'Sheet name or id.' } }, required: ['sheet'] },
+            run: args => system.deleteSheet(args.sheet),
+            summarize: (args, result) => `Excluiu a ficha de ${result.deleted}`,
+        },
+        {
+            name: 'system_roll',
+            group: TOOL_GROUPS.system,
+            description: 'Roll a check for a sheet: d20 + the skill total or attribute modifier (+ optional situational bonus), against a difficulty class (dc) when given. Use it when the outcome of an action is uncertain, then narrate according to the result. "advantage"/"disadvantage" roll 2d20 and keep the higher/lower. The roll is random and recorded for the user: never invent, change or reroll a result.',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    sheet: SHEET_PARAM,
+                    check: { type: 'string', description: 'Skill or attribute to test, e.g. "Furtividade" or "Força".' },
+                    dc: { type: 'integer', description: 'Difficulty: 10 easy, 15 medium, 20 hard, 25 very hard.' },
+                    mode: { type: 'string', enum: ['normal', 'advantage', 'disadvantage'], description: 'Default "normal".' },
+                    bonus: { type: 'integer', description: 'Situational bonus or penalty (e.g. +2 for good tools, -2 for darkness).' },
+                    reason: { type: 'string', description: 'Short description of what is being attempted.' },
+                },
+                required: ['check'],
+            },
+            run: args => system.roll(args.sheet, { check: args.check, dc: args.dc, mode: args.mode ?? 'normal', bonus: args.bonus, reason: args.reason }),
+            summarize: (args, result) => result.summary,
+        },
     ];
 }
 
@@ -436,7 +619,7 @@ export class AgentToolBridge {
             profile = structuredClone(base);
             profile.id = STUDIO_PROFILE_ID;
             profile.displayName = 'Agent Studio Writer';
-            profile.description = 'Cópia do Default Writer com as ferramentas do Agent Studio (estúdio de arquivos e edição de lorebooks).';
+            profile.description = 'Cópia do Default Writer com as ferramentas do Agent Studio (estúdio de arquivos, lorebooks e fichas de RPG).';
             created = true;
         } else {
             profile = structuredClone(profile);
@@ -451,5 +634,20 @@ export class AgentToolBridge {
         }
         await profiles.save(profile);
         return { profileId: profile.id, displayName: profile.displayName, created, added: added.length };
+    }
+
+    /** Se o Profile "Agent Studio Writer" já existe, libera nele as ferramentas novas desta versão. */
+    async syncStudioProfile() {
+        if (!this.isAvailable()) return null;
+        let profile = null;
+        try {
+            profile = (await this.agentApi.profiles.load(STUDIO_PROFILE_ID))?.profile ?? null;
+        } catch {
+            return null;
+        }
+        if (!profile) return null;
+        const allow = Array.isArray(profile.tools?.allow) ? profile.tools.allow : [];
+        if (this.registeredIds().every(id => allow.includes(id))) return null;
+        return this.grantToProfile(STUDIO_PROFILE_ID);
     }
 }

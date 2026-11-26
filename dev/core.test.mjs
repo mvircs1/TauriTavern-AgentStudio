@@ -23,16 +23,24 @@ const { StudioFS } = await import('../src/studio-fs.js');
 const { LorebookService, sanitizeEntryFields } = await import('../src/lorebook.js');
 const { ActivityLog } = await import('../src/activity.js');
 const { AgentToolBridge, buildToolDefinitions, STUDIO_PROFILE_ID } = await import('../src/tools.js');
+const { SystemService, modifier } = await import('../src/system.js');
 const { normalizePath } = await import('../src/util.js');
 
-function makeServices({ backupsPerBook = 20 } = {}) {
+/** Gerador "aleatório" previsível: devolve os d20 pedidos em sequência. */
+function scriptedD20(...values) {
+    const queue = [...values];
+    return () => ((queue.shift() ?? 10) - 1) / 20;
+}
+
+function makeServices({ backupsPerBook = 20, random } = {}) {
     const storage = createStorage();
-    const settings = { studioTools: true, loreReadTools: true, loreWriteTools: true, backupsPerBook };
+    const settings = { studioTools: true, loreReadTools: true, loreWriteTools: true, systemTools: true, backupsPerBook };
     const fs = new StudioFS(storage);
     const lore = new LorebookService(storage, () => settings);
     const activity = new ActivityLog(storage);
-    const bridge = new AgentToolBridge({ definitions: buildToolDefinitions({ fs, lore }), activity, getSettings: () => settings });
-    return { storage, settings, fs, lore, activity, bridge };
+    const system = new SystemService(storage, lore, random ? { random } : undefined);
+    const bridge = new AgentToolBridge({ definitions: buildToolDefinitions({ fs, lore, system }), activity, getSettings: () => settings });
+    return { storage, settings, fs, lore, activity, system, bridge };
 }
 
 describe('caminhos', () => {
@@ -311,12 +319,12 @@ describe('lorebooks (LorebookService)', () => {
 describe('ferramentas do Agent (AgentToolBridge)', () => {
     beforeEach(installGlobals);
 
-    test('registra as 15 ferramentas com schemas portáteis e nomes válidos para o modelo', async () => {
+    test('registra as 23 ferramentas com schemas portáteis e nomes válidos para o modelo', async () => {
         const { bridge } = makeServices();
         assert.equal(bridge.isAvailable(), true);
         await bridge.registerAll();
         assert.equal(bridge.errors.length, 0, JSON.stringify(bridge.errors));
-        assert.equal(agent.tools.size, 15);
+        assert.equal(agent.tools.size, 23);
         for (const [id, tool] of agent.tools) {
             assert.match(tool.definition.name, /^[A-Za-z0-9_-]{1,64}$/);
             assert.ok(!/^(workspace|chat|skill|agent|worldinfo|dice|task)_/.test(tool.definition.name), `${id} colide com aliases nativos`);
@@ -361,7 +369,7 @@ describe('ferramentas do Agent (AgentToolBridge)', () => {
         await bridge.registerAll();
         const first = await bridge.grantToProfile(STUDIO_PROFILE_ID);
         assert.equal(first.created, true);
-        assert.equal(first.added, 15);
+        assert.equal(first.added, 23);
         const saved = agent.profiles.get(STUDIO_PROFILE_ID);
         assert.equal(saved.displayName, 'Agent Studio Writer');
         assert.ok(saved.tools.allow.includes('workspace.commit'), 'mantém as ferramentas nativas');
