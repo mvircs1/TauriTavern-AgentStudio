@@ -54,6 +54,57 @@ const RESOURCE_VALUES = {
         required: ['name'],
     },
 };
+const STAT_VALUES = {
+    type: 'array',
+    description: 'Stat bonuses to set (e.g. armor adds to Defesa: [{"name": "Defesa", "bonus": 2}]).',
+    items: {
+        type: 'object',
+        properties: {
+            name: { type: 'string', description: 'Stat name (as in system_info), e.g. "Defesa".' },
+            bonus: { type: 'integer', description: 'Bonus added to the stat (armor, shield, items).' },
+        },
+        required: ['name', 'bonus'],
+    },
+};
+const ABILITY_PROPERTIES = {
+    name: { type: 'string', description: 'Ability name (spell, power, technique, attack).' },
+    description: { type: 'string', description: 'What it does, in a few sentences.' },
+    cost: { type: 'integer', description: 'Resource cost per use (0 = free).' },
+    cost_resource: { type: 'string', description: 'Resource paid, e.g. "Mana" (default Mana).' },
+    check: { type: 'string', description: 'Skill, attribute or stat rolled to hit/succeed (e.g. "Arcanismo", "Força"). Omit if it always works.' },
+    effect: { type: 'string', description: 'Effect: dice like "2d6+FOR" or "1d8+2" (rolled on use), or plain text.' },
+    fields: {
+        type: 'array',
+        description: 'Extra fields defined by the user (see system_info section "abilities"), e.g. Alcance, Duração, Recarga.',
+        items: {
+            type: 'object',
+            properties: {
+                name: { type: 'string', description: 'Field name, e.g. "Alcance".' },
+                value: { type: 'string', description: 'Field value, e.g. "9 m".' },
+            },
+            required: ['name', 'value'],
+        },
+    },
+};
+const ABILITY_LIST = {
+    type: 'array',
+    description: 'Abilities of this character.',
+    items: { type: 'object', properties: ABILITY_PROPERTIES, required: ['name'] },
+};
+
+/** Converte uma habilidade vinda do modelo (snake_case) para o formato do serviço. */
+function abilityInput(args) {
+    return {
+        name: args.name,
+        description: args.description,
+        cost: args.cost,
+        costResource: args.cost_resource,
+        check: args.check,
+        effect: args.effect,
+        fields: args.fields,
+    };
+}
+
 const LORE_LINK = {
     type: 'object',
     description: 'Lorebook entry of this character. A linked sheet persists outside this chat and appears in every chat where that lorebook is active.',
@@ -141,10 +192,28 @@ const ARG_ALIASES = {
     sheet_delete: { sheet: [...SHEET_ALIASES, 'name'] },
     system_roll: {
         sheet: [...SHEET_ALIASES, 'name'],
-        check: ['skill', 'attribute', 'stat', 'ability', 'pericia', 'atributo', 'test', 'roll'],
-        dc: ['difficulty', 'cd', 'target', 'dificuldade', 'difficulty_class'],
+        check: ['skill', 'attribute', 'stat', 'pericia', 'atributo', 'test', 'roll'],
+        dc: ['difficulty', 'cd', 'dificuldade', 'difficulty_class'],
+        against: ['target', 'opponent', 'vs', 'versus', 'alvo', 'target_sheet'],
+        against_stat: ['againstStat', 'defense_stat', 'target_stat'],
         mode: ['roll_mode'],
         bonus: ['modifier', 'situational_bonus', 'extra'],
+    },
+    sheet_ability: {
+        sheet: SHEET_ALIASES,
+        ability: ['ability_name', 'current_name', 'old_name', 'skill', 'power', 'spell', 'habilidade'],
+        name: ['new_name', 'title'],
+        cost_resource: ['costResource', 'resource', 'cost_type', 'recurso'],
+        check: ['roll', 'test', 'attack_with', 'pericia'],
+        effect: ['damage', 'dice', 'efeito', 'dano'],
+    },
+    ability_use: {
+        sheet: [...SHEET_ALIASES, 'user', 'caster', 'attacker'],
+        ability: ['ability_name', 'name', 'skill', 'power', 'spell', 'habilidade'],
+        target: ['against', 'opponent', 'vs', 'alvo', 'defender', 'target_sheet'],
+        dc: ['difficulty', 'cd', 'dificuldade'],
+        apply: ['apply_effect', 'effect_mode'],
+        resource: ['apply_resource', 'damage_resource', 'target_resource'],
     },
 };
 
@@ -191,6 +260,26 @@ const ARG_FIXES = {
             if (lose !== undefined) input.delta = -Math.abs(Number(lose));
             else if (gain !== undefined) input.delta = Math.abs(Number(gain));
         }
+    },
+    sheet_ability: input => {
+        const action = foldText(input.action ?? '');
+        if (['create', 'new', 'adicionar', 'criar', 'learn'].includes(action)) input.action = 'add';
+        else if (['edit', 'change', 'modify', 'editar', 'alterar', 'set'].includes(action)) input.action = 'update';
+        else if (['delete', 'del', 'forget', 'excluir', 'remover', 'apagar'].includes(action)) input.action = 'remove';
+        // Para editar/remover, o nome atual pode vir em "name".
+        if ((input.action === 'update' || input.action === 'remove') && input.ability === undefined && input.name !== undefined) {
+            input.ability = input.name;
+            delete input.name;
+        }
+    },
+    ability_use: input => {
+        const apply = foldText(input.apply ?? '');
+        if (input.apply_damage === true || ['dano', 'damage', 'hurt', 'attack'].includes(apply)) input.apply = 'damage';
+        else if (input.heal === true || ['cura', 'curar', 'heal', 'healing'].includes(apply)) input.apply = 'heal';
+        else if (apply && apply !== 'none') input.apply = 'none';
+        const mode = foldText(input.mode ?? '');
+        if (input.advantage === true || ['vantagem', 'adv'].includes(mode)) input.mode = 'advantage';
+        else if (input.disadvantage === true || ['desvantagem', 'dis'].includes(mode)) input.mode = 'disadvantage';
     },
     system_roll: input => {
         const mode = foldText(input.mode ?? '');
@@ -537,11 +626,11 @@ export function buildToolDefinitions({ fs, lore, system }) {
         {
             name: 'system_info',
             group: TOOL_GROUPS.system,
-            description: 'Describe the user\'s RPG system: attributes, skills (each tied to an attribute) and resources (like Vida/HP and Mana), with the descriptions the user wrote, plus the rules (D&D-style modifiers, d20 checks, no levels or XP). Read it once before working with sheets or checks.',
+            description: 'Describe the user\'s RPG system: attributes, skills (each tied to an attribute), resources (like Vida/HP and Mana), stats (like Defesa = the DC to hit a character, Iniciativa) and the extra fields of abilities, with the descriptions the user wrote, plus the rules (D&D-style modifiers, d20 checks, no levels or XP). Read it once before working with sheets or checks.',
             inputSchema: {
                 type: 'object',
                 properties: {
-                    section: { type: 'string', enum: ['all', 'rules', 'attributes', 'skills', 'resources'], description: 'Part to return (default "all").' },
+                    section: { type: 'string', enum: ['all', 'rules', 'attributes', 'skills', 'resources', 'stats', 'abilities'], description: 'Part to return (default "all").' },
                 },
             },
             run: args => system.systemInfo({ section: args.section }),
@@ -550,7 +639,7 @@ export function buildToolDefinitions({ fs, lore, system }) {
         {
             name: 'sheet_list',
             group: TOOL_GROUPS.system,
-            description: 'List the character sheets available in this chat with their resources: the player\'s sheet (the user\'s character; location "player"), NPC sheets of this chat ("chat"), and NPC sheets linked to entries of lorebooks active in this chat ("lorebook").',
+            description: 'List the character sheets available in this chat with their resources, defense and ability names: the player\'s sheet (the user\'s character; location "player"), NPC sheets of this chat ("chat"), and NPC sheets linked to entries of lorebooks active in this chat ("lorebook").',
             inputSchema: {
                 type: 'object',
                 properties: {
@@ -563,7 +652,7 @@ export function buildToolDefinitions({ fs, lore, system }) {
         {
             name: 'sheet_read',
             group: TOOL_GROUPS.system,
-            description: 'Read a character sheet in full: attribute scores and modifiers, skill bonuses and totals, resources (current/max) and notes.',
+            description: 'Read a character sheet in full: resources (current/max), stats (Defesa, Iniciativa...), attribute scores and modifiers, skill bonuses and totals, abilities (cost, check, effect, extra fields) and notes.',
             inputSchema: { type: 'object', properties: { sheet: SHEET_PARAM } },
             run: args => system.readSheet(args.sheet),
             summarize: (args, result) => `Leu a ficha de ${result.name}`,
@@ -571,7 +660,7 @@ export function buildToolDefinitions({ fs, lore, system }) {
         {
             name: 'sheet_create',
             group: TOOL_GROUPS.system,
-            description: 'Create an NPC sheet (companion, rival, enemy). By default it belongs to this chat only. For a recurring character that has a lorebook entry, pass link_lorebook so the sheet persists in every chat where that lorebook is active. Values you omit use the defaults (score 10, resources at their default maximum).',
+            description: 'Create an NPC sheet (companion, rival, enemy), optionally with abilities. By default it belongs to this chat only. For a recurring character that has a lorebook entry, pass link_lorebook so the sheet persists in every chat where that lorebook is active. Values you omit use the defaults (score 10, resources at their default maximum).',
             inputSchema: {
                 type: 'object',
                 properties: {
@@ -580,6 +669,8 @@ export function buildToolDefinitions({ fs, lore, system }) {
                     attributes: ATTRIBUTE_VALUES,
                     skills: SKILL_VALUES,
                     resources: RESOURCE_VALUES,
+                    stats: STAT_VALUES,
+                    abilities: ABILITY_LIST,
                     link_lorebook: LORE_LINK,
                 },
                 required: ['name'],
@@ -590,6 +681,8 @@ export function buildToolDefinitions({ fs, lore, system }) {
                 attributes: args.attributes,
                 skills: args.skills,
                 resources: args.resources,
+                stats: args.stats,
+                abilities: Array.isArray(args.abilities) ? args.abilities.map(abilityInput) : undefined,
                 linkLorebook: args.link_lorebook,
                 runId: context.runId,
             }),
@@ -598,7 +691,7 @@ export function buildToolDefinitions({ fs, lore, system }) {
         {
             name: 'sheet_update',
             group: TOOL_GROUPS.system,
-            description: 'Change a sheet: name, notes, attribute scores, skill bonuses, resource maximum/current; link it to a lorebook entry (link_lorebook) or move it back into this chat (unlink_lorebook). For damage, healing or spending during play prefer sheet_resource.',
+            description: 'Change a sheet: name, notes, attribute scores, skill bonuses, stat bonuses (e.g. armor +2 Defesa), resource maximum/current; link it to a lorebook entry (link_lorebook) or move it back into this chat (unlink_lorebook). For damage, healing or spending during play prefer sheet_resource; for abilities use sheet_ability.',
             inputSchema: {
                 type: 'object',
                 properties: {
@@ -607,6 +700,7 @@ export function buildToolDefinitions({ fs, lore, system }) {
                     notes: { type: 'string', description: 'New notes (replaces the old ones).' },
                     attributes: ATTRIBUTE_VALUES,
                     skills: SKILL_VALUES,
+                    stats: STAT_VALUES,
                     resources: RESOURCE_VALUES,
                     link_lorebook: LORE_LINK,
                     unlink_lorebook: { type: 'boolean', description: 'Move a lorebook-linked sheet back into this chat only.' },
@@ -617,6 +711,7 @@ export function buildToolDefinitions({ fs, lore, system }) {
                 notes: args.notes,
                 attributes: args.attributes,
                 skills: args.skills,
+                stats: args.stats,
                 resources: args.resources,
                 linkLorebook: args.link_lorebook,
                 unlinkLorebook: args.unlink_lorebook === true,
@@ -642,6 +737,62 @@ export function buildToolDefinitions({ fs, lore, system }) {
             summarize: (args, result) => `${result.resource} de ${result.sheet}: ${result.before} → ${result.after}/${result.max}`,
         },
         {
+            name: 'sheet_ability',
+            group: TOOL_GROUPS.system,
+            description: 'Add, update or remove an ability (spell, power, technique, special attack) on a sheet. An ability has a cost (e.g. 3 Mana), a check rolled to hit (skill/attribute), an effect (dice like "2d6+FOR" are rolled on use, or plain text) and the user\'s extra fields (Alcance, Duração, Recarga...). For "update"/"remove", pass the current name in "ability"; for "update" only the fields you pass change.',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    sheet: SHEET_PARAM,
+                    action: { type: 'string', enum: ['add', 'update', 'remove'], description: 'Default "add".' },
+                    ability: { type: 'string', description: 'Current name of the ability to update/remove.' },
+                    ...ABILITY_PROPERTIES,
+                    name: { type: 'string', description: 'Name of the new ability (add) or new name (update).' },
+                },
+            },
+            run: (args, context) => system.editAbility(args.sheet, {
+                action: args.action ?? 'add',
+                ability: args.ability,
+                ...abilityInput(args),
+                runId: context.runId,
+            }),
+            summarize: (args, result) => {
+                const name = typeof result.ability === 'string' ? result.ability : result.ability?.name;
+                const verb = { added: 'Criou', updated: 'Editou', removed: 'Removeu' }[result.action] ?? 'Mudou';
+                return `${verb} a habilidade "${name}" de ${result.sheet}`;
+            },
+        },
+        {
+            name: 'ability_use',
+            group: TOOL_GROUPS.system,
+            description: 'Use an ability from a sheet: pays its cost (fails if there is not enough), rolls its check against "dc" or against the target\'s defense stat, and rolls its effect dice. With apply "damage" the effect total is subtracted from the target\'s resource (Vida by default) if it hits; with "heal" it is added (to the target, or to the user without a target). Results are random and recorded for the user: narrate according to them, never invent or reroll.',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    sheet: SHEET_PARAM,
+                    ability: { type: 'string', description: 'Ability name.' },
+                    target: { type: 'string', description: 'Target sheet name (its defense stat becomes the DC).' },
+                    dc: { type: 'integer', description: 'Fixed difficulty instead of the target\'s defense.' },
+                    apply: { type: 'string', enum: ['none', 'damage', 'heal'], description: 'Apply the effect total to a resource (default "none").' },
+                    resource: { type: 'string', description: 'Resource affected by apply (default: the first one, usually Vida).' },
+                    mode: { type: 'string', enum: ['normal', 'advantage', 'disadvantage'], description: 'Default "normal".' },
+                    bonus: { type: 'integer', description: 'Situational bonus or penalty to the check.' },
+                },
+                required: ['ability'],
+            },
+            run: (args, context) => system.useAbility(args.sheet, {
+                ability: args.ability,
+                target: args.target,
+                dc: args.dc,
+                apply: args.apply ?? 'none',
+                resource: args.resource,
+                mode: args.mode ?? 'normal',
+                bonus: args.bonus,
+                runId: context.runId,
+            }),
+            summarize: (args, result) => result.summary,
+        },
+        {
             name: 'sheet_delete',
             group: TOOL_GROUPS.system,
             description: 'Delete an NPC sheet that is no longer needed (the player\'s sheet cannot be deleted).',
@@ -652,20 +803,30 @@ export function buildToolDefinitions({ fs, lore, system }) {
         {
             name: 'system_roll',
             group: TOOL_GROUPS.system,
-            description: 'Roll a check for a sheet: d20 + the skill total or attribute modifier (+ optional situational bonus), against a difficulty class (dc) when given. Use it when the outcome of an action is uncertain, then narrate according to the result. "advantage"/"disadvantage" roll 2d20 and keep the higher/lower. The roll is random and recorded for the user: never invent, change or reroll a result.',
+            description: 'Roll a check for a sheet: d20 + the skill total, attribute modifier or stat (+ optional situational bonus), against a difficulty class (dc) or against another sheet\'s defense ("against": the target\'s Defesa becomes the DC, for attacks). Use it when the outcome of an action is uncertain, then narrate according to the result. "advantage"/"disadvantage" roll 2d20 and keep the higher/lower. The roll is random and recorded for the user: never invent, change or reroll a result.',
             inputSchema: {
                 type: 'object',
                 properties: {
                     sheet: SHEET_PARAM,
-                    check: { type: 'string', description: 'Skill or attribute to test, e.g. "Furtividade" or "Força".' },
+                    check: { type: 'string', description: 'Skill, attribute or stat to test, e.g. "Furtividade", "Força", "Iniciativa".' },
                     dc: { type: 'integer', description: 'Difficulty: 10 easy, 15 medium, 20 hard, 25 very hard.' },
+                    against: { type: 'string', description: 'Target sheet name: its defense stat is used as the DC (attacks).' },
+                    against_stat: { type: 'string', description: 'Use another stat of the target as the DC (default: its defense stat).' },
                     mode: { type: 'string', enum: ['normal', 'advantage', 'disadvantage'], description: 'Default "normal".' },
                     bonus: { type: 'integer', description: 'Situational bonus or penalty (e.g. +2 for good tools, -2 for darkness).' },
                     reason: { type: 'string', description: 'Short description of what is being attempted.' },
                 },
                 required: ['check'],
             },
-            run: args => system.roll(args.sheet, { check: args.check, dc: args.dc, mode: args.mode ?? 'normal', bonus: args.bonus, reason: args.reason }),
+            run: args => system.roll(args.sheet, {
+                check: args.check,
+                dc: args.dc,
+                against: args.against,
+                againstStat: args.against_stat,
+                mode: args.mode ?? 'normal',
+                bonus: args.bonus,
+                reason: args.reason,
+            }),
             summarize: (args, result) => result.summary,
         },
     ];

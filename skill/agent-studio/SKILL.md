@@ -1,7 +1,7 @@
 ---
 name: agent-studio
-description: Guia das ferramentas do Agent Studio. Cobre o estúdio de arquivos persistente (studio_*), os lorebooks/World Info (lorebook_*) e o sistema de RPG com fichas, Vida/Mana e testes de d20 (system_*, sheet_*). Leia no começo de qualquer run em que o usuário fale de lore, notas, organizar informações, lorebook, ficha, atributos, perícias, dano, cura, magia, combate ou teste de dado.
-version: 0.3.0
+description: Guia das ferramentas do Agent Studio. Cobre o estúdio de arquivos persistente (studio_*), os lorebooks/World Info (lorebook_*) e o sistema de RPG com fichas, Vida/Mana, Defesa, habilidades e testes de d20 (system_*, sheet_*, ability_use). Leia no começo de qualquer run em que o usuário fale de lore, notas, organizar informações, lorebook, ficha, atributos, perícias, habilidades, magias, dano, cura, combate ou teste de dado.
+version: 0.5.0
 author: mvircs1
 tags: [agent-studio, rpg, lorebook, world-info]
 ---
@@ -20,13 +20,15 @@ Depois de usar as ferramentas, escreva a resposta da história normalmente no se
 
 | Quero… | Ferramenta |
 |---|---|
-| Ver as regras do RPG (atributos, perícias, recursos) | `system_info` |
-| Ver as fichas da cena e a Vida/Mana de todos | `sheet_list` |
-| Ver uma ficha completa | `sheet_read` |
-| Rolar um teste | `system_roll` |
+| Ver as regras do RPG (atributos, perícias, recursos, estatísticas) | `system_info` |
+| Ver as fichas da cena, Vida/Mana e Defesa de todos | `sheet_list` |
+| Ver uma ficha completa (com habilidades) | `sheet_read` |
+| Rolar um teste ou um ataque contra a Defesa de alguém | `system_roll` |
+| Usar uma habilidade (gasta custo, rola teste e efeito) | `ability_use` |
+| Dar, editar ou tirar uma habilidade de um personagem | `sheet_ability` |
 | Causar dano, curar ou gastar mana | `sheet_resource` |
 | Criar um NPC com ficha | `sheet_create` |
-| Mudar atributos, perícias, notas ou vincular a lorebook | `sheet_update` |
+| Mudar atributos, perícias, bônus de Defesa, notas ou vincular a lorebook | `sheet_update` |
 | Apagar a ficha de um NPC | `sheet_delete` |
 | Ver quais lorebooks existem e quais estão ativos | `lorebook_list` |
 | Ler ou buscar entradas de lorebook | `lorebook_read`, `lorebook_search` |
@@ -43,8 +45,12 @@ Depois de usar as ferramentas, escreva a resposta da história normalmente no se
 - Não há nível nem XP.
 - **Modificador** = (valor − 10) ÷ 2, arredondado para baixo: 8–9 = −1, 10–11 = +0, 12–13 = +1, 14–15 = +2, 16–17 = +3, 18–19 = +4, 20 = +5.
 - **Perícia** = modificador do atributo dela + bônus da perícia. Use bônus 0 para destreinado, 2 para treinado e 4 para especialista.
-- **Teste** = d20 + perícia ou atributo, contra uma dificuldade (CD): 5 muito fácil, 10 fácil, 15 médio, 20 difícil, 25 muito difícil.
-- Os nomes e descrições reais dos atributos, perícias e recursos são os do usuário. Chame `system_info` uma vez por run antes de usar fichas, porque eles podem ter sido renomeados.
+- **Estatísticas** = base + modificador do atributo + bônus da ficha. Por padrão:
+  - **Defesa** = 10 + Destreza + bônus (armadura, escudo). É a CD para acertar o personagem.
+  - **Iniciativa** = Destreza + bônus.
+  - **Deslocamento** = 9.
+- **Teste** = d20 + perícia, atributo ou estatística, contra uma dificuldade (CD): 5 muito fácil, 10 fácil, 15 médio, 20 difícil, 25 muito difícil.
+- Os nomes e descrições reais dos atributos, perícias, recursos e estatísticas são os do usuário. Chame `system_info` uma vez por run antes de usar fichas, porque eles podem ter sido renomeados.
 
 ### As fichas
 
@@ -76,10 +82,18 @@ Exemplo para um NPC, com vantagem:
 - **Nunca invente, mude ou repita uma rolagem.** Narre de acordo com `success`.
 - `natural: 20` merece um sucesso marcante e `natural: 1` uma falha marcante, mesmo que o total diga outra coisa.
 
-### Combate simples (sugestão, sem matemática pesada)
+### Combate
 
-- **Atacar**: o atacante rola a perícia ou atributo do ataque contra CD = 10 + modificador de Destreza do alvo.
-- **Dano**, para personagens com Vida por volta de 10: leve 1–3, médio 4–6, grave 7–10. Aplique sempre com `sheet_resource`.
+- **Ordem**: no começo de uma luta, role `Iniciativa` de cada participante (`system_roll {"sheet": "...", "check": "Iniciativa"}`).
+- **Ataque comum**: role a perícia ou atributo do ataque **contra a Defesa do alvo**:
+
+```json
+{ "sheet": "Goblin", "check": "Destreza", "against": "Aria", "reason": "flecha" }
+```
+
+- **Ataque ou magia que o personagem tem como habilidade**: use `ability_use`, que faz tudo de uma vez (veja "Habilidades" abaixo).
+- **Dano sem habilidade**, para personagens com Vida por volta de 10: leve 1–3, médio 4–6, grave 7–10. Aplique sempre com `sheet_resource`.
+- **Armadura ou escudo** que o personagem equipa viram bônus de Defesa: `sheet_update {"stats": [{"name": "Defesa", "bonus": 2}]}`.
 
 Dano no jogador (omitir `sheet` = jogador):
 
@@ -117,6 +131,37 @@ Criar a ficha de um NPC (valores omitidos usam o padrão):
 
 - **Personagem recorrente com entrada em lorebook**: encontre a entrada com `lorebook_search`, depois vincule a ficha com `sheet_update {"sheet": "Capitão Voss", "link_lorebook": {"book": "Nome do Lorebook", "uid": 3}}`. Também dá para criar já vinculado, passando `link_lorebook` no `sheet_create`.
 - **Inimigos descartáveis**: deixe a ficha no chat. Apague com `sheet_delete` quando não forem mais necessários.
+
+### Habilidades (magias, poderes, técnicas)
+
+Cada ficha tem uma lista de habilidades. Cada habilidade tem:
+
+- `cost` + `cost_resource`: custo por uso, por exemplo 3 de Mana.
+- `check`: a perícia ou atributo rolado para acertar. Sem ele, a habilidade sempre funciona.
+- `effect`: dados como `"2d6+FOR"` ou `"1d8+2"`, rolados no uso, ou um texto livre.
+- Campos extras do usuário, como Alcance, Duração e Recarga, em `fields`.
+
+Dar uma habilidade a alguém (`sheet_ability`):
+
+```json
+{ "sheet": "Aria", "action": "add", "name": "Flecha Arcana",
+  "description": "Dispara uma flecha de energia que nunca erra o caminho.",
+  "cost": 2, "cost_resource": "Mana", "check": "Destreza", "effect": "1d8+DES",
+  "fields": [{ "name": "Alcance", "value": "30 m" }] }
+```
+
+Para editar, use `"action": "update"` com o nome atual em `"ability"`. Para tirar, use `"action": "remove"`.
+
+Usar a habilidade (`ability_use`). Ela paga o custo, rola o teste contra a Defesa do alvo, rola o efeito e, com `"apply": "damage"`, já tira a Vida do alvo se acertar:
+
+```json
+{ "sheet": "Aria", "ability": "Flecha Arcana", "target": "Goblin", "apply": "damage" }
+```
+
+- Use `"apply": "heal"` para curar. Sem `target`, a cura vai para quem usou.
+- Se não houver recurso suficiente, a ferramenta recusa. Narre que o personagem está sem energia.
+- Crie habilidades quando o personagem aprender algo na história, ou quando o usuário pedir.
+- Mantenha o custo coerente com o recurso. Uma magia poderosa deve custar caro.
 
 Mudar valores de uma ficha existente:
 

@@ -31,7 +31,7 @@ Para receber uma versão nova, use o botão de **atualizar** da extensão em Ext
 
 ## Configuração (uma vez)
 
-1. Em **Extensões**, abra a seção **Agent Studio**. O status deve mostrar "23 de 23 ferramentas registradas no Agent".
+1. Em **Extensões**, abra a seção **Agent Studio**. O status deve mostrar "25 de 25 ferramentas registradas no Agent".
 2. Em **Profile do Agent**, deixe selecionado **Agent Studio Writer (cópia do default-writer)** e toque em **Liberar ferramentas**.
    - O modelo só enxerga as ferramentas que estão liberadas no Profile ativo. O `default-writer` não pode ser editado, por isso o plugin cria uma cópia dele já com as ferramentas.
    - Se você já tem um Profile próprio, escolha ele na lista e libere as ferramentas nele.
@@ -67,6 +67,13 @@ O painel tem cinco abas:
 - **Atributos**: vêm 5 por padrão (Força, Destreza, Constituição, Inteligência, Carisma). O ✏️ muda nome e descrição, o ➕ cria outro e a 🗑️ exclui.
 - **Perícias**: vêm 8 por padrão. Cada uma fica ligada a um atributo, por exemplo Furtividade → Destreza.
 - **Recursos**: vêm Vida e Mana, cada um com um máximo padrão. Dá para criar outros, como Estamina ou Sanidade.
+- **Estatísticas**: valores derivados, calculados como base + modificador de um atributo + bônus da ficha. Vêm três:
+  - **Defesa** = 10 + Destreza + bônus. É a CD dos ataques contra o personagem.
+  - **Iniciativa** = Destreza + bônus.
+  - **Deslocamento** = 9.
+  
+  Dá para criar outras, como Vontade ou Resistência Mágica, e escolher qual delas é a Defesa.
+- **Campos de habilidade**: campos extras que toda habilidade tem, além de custo, teste e efeito. Vêm Alcance, Duração e Recarga.
 
 A IA lê as descrições, então descreva cada item do jeito que você quer que ele seja usado. Há também um botão para restaurar as regras padrão.
 
@@ -74,14 +81,23 @@ A IA lê as descrições, então descreva cada item do jeito que você quer que 
 
 - **Modificador** = (valor − 10) ÷ 2, arredondado para baixo. Na prática: 8–9 = −1, 10–11 = +0, 12–13 = +1, 14–15 = +2, 16–17 = +3, 18–19 = +4, 20 = +5.
 - **Perícia** = modificador do atributo + bônus da perícia. Por exemplo, +2 se o personagem for treinado nela.
-- **Teste** = d20 + perícia ou atributo, contra uma dificuldade (CD): 10 é fácil, 15 é médio e 20 é difícil. Com vantagem ou desvantagem, rola 2d20 e fica com o maior ou o menor.
+- **Teste** = d20 + perícia, atributo ou estatística, contra uma dificuldade (CD): 10 é fácil, 15 é médio e 20 é difícil. Com vantagem ou desvantagem, rola 2d20 e fica com o maior ou o menor.
+- **Ataque** = um teste contra a **Defesa** do alvo.
 
 **Fichas** (sub-aba *Fichas*):
 
 - **Jogador**: uma ficha por personagem (card), compartilhada entre os chats dele. O nome inicial é o da sua persona.
 - **NPCs**: ficam no chat em que foram criados. Viajam junto com branches e exportações do chat.
 - **NPC vinculado a um lorebook**: quando um personagem recorrente tem entrada num lorebook, a ficha dele pode ser vinculada a essa entrada. Aí ela aparece em todo chat onde esse lorebook estiver ativo. Você pode vincular pela própria ficha, ou a IA pode fazer isso sozinha.
-- Na ficha você edita os valores. Os botões − e + ajustam Vida e Mana, e o 🎲 rola o teste, que aparece numa notificação e na aba Atividade. A IA mexe nas mesmas fichas pelas ferramentas.
+- Na ficha você edita os valores, inclusive os bônus de estatística (armadura na Defesa, por exemplo). Os botões − e + ajustam Vida e Mana, e o 🎲 rola o teste, que aparece numa notificação e na aba Atividade. A IA mexe nas mesmas fichas pelas ferramentas.
+- **Habilidades** (magias, golpes, poderes): cada ficha tem a sua lista. Cada habilidade tem:
+  - nome e descrição;
+  - **custo**, por exemplo 3 Mana;
+  - **teste para acertar** (uma perícia ou atributo);
+  - **efeito**, que pode ser dados como `2d6+FOR` (rolados no uso) ou texto;
+  - os campos extras das Regras.
+
+  O ➕ cria uma habilidade, o ✏️ edita e a 🪄 usa: paga o custo e rola o teste e o efeito. A IA usa as habilidades com `ability_use`, que também pode aplicar o dano ou a cura direto na ficha do alvo.
 
 ## Ferramentas que o Agent recebe
 
@@ -102,14 +118,16 @@ A IA lê as descrições, então descreva cada item do jeito que você quer que 
 | `lorebook_update_entry` | Edita campos de uma entrada ou um trecho do conteúdo, com backup antes |
 | `lorebook_delete_entry` | Exclui uma entrada, com backup antes |
 | `lorebook_create_book` | Cria um lorebook vazio |
-| `system_info` | Mostra as regras: atributos, perícias, recursos e como funcionam |
-| `sheet_list` | Lista as fichas disponíveis no chat, com Vida e Mana |
-| `sheet_read` | Lê uma ficha completa, com modificadores e totais |
-| `sheet_create` | Cria a ficha de um NPC, que pode já nascer vinculada a um lorebook |
-| `sheet_update` | Muda valores, notas e nome, ou vincula e desvincula a ficha de um lorebook |
+| `system_info` | Mostra as regras: atributos, perícias, recursos, estatísticas, campos de habilidade e como funcionam |
+| `sheet_list` | Lista as fichas disponíveis no chat, com Vida, Mana, Defesa e habilidades |
+| `sheet_read` | Lê uma ficha completa, com modificadores, totais e habilidades |
+| `sheet_create` | Cria a ficha de um NPC, que pode já nascer com habilidades e vinculada a um lorebook |
+| `sheet_update` | Muda valores, bônus de estatística, notas e nome, ou vincula e desvincula a ficha de um lorebook |
 | `sheet_resource` | Dano, cura ou gasto de Vida, Mana etc. |
+| `sheet_ability` | Cria, edita ou remove uma habilidade de uma ficha |
+| `ability_use` | Usa uma habilidade: paga o custo, rola o teste contra a Defesa do alvo e rola o efeito, podendo aplicar dano ou cura |
 | `sheet_delete` | Exclui a ficha de um NPC |
-| `system_roll` | Teste de d20 + modificador contra uma CD, com vantagem ou desvantagem |
+| `system_roll` | Teste de d20 + modificador contra uma CD ou contra a Defesa de outra ficha, com vantagem ou desvantagem |
 
 As configurações da extensão têm quatro interruptores: estúdio, leitura de lorebooks, edição de lorebooks e sistema.
 
@@ -132,7 +150,7 @@ Os lorebooks continuam sendo os arquivos normais do SillyTavern. O plugin só us
 
 ## Desenvolvimento
 
-- `node --test dev/core.test.mjs dev/system.test.mjs dev/skill.test.mjs dev/robust-undo.test.mjs` roda os testes da lógica: estúdio, lorebooks, backups, registro das ferramentas, sistema de RPG e Skill. Eles usam simulações do SillyTavern e da API do TauriTavern 2.4.0.
+- `node --test dev/core.test.mjs dev/system.test.mjs dev/skill.test.mjs dev/robust-undo.test.mjs dev/abilities.test.mjs` roda os testes da lógica: estúdio, lorebooks, backups, registro das ferramentas, sistema de RPG e Skill. Eles usam simulações do SillyTavern e da API do TauriTavern 2.4.0.
 - Ao mudar ferramentas, atualize o `skill/agent-studio/SKILL.md` e a `version` dele. O teste da Skill falha se alguma ferramenta não estiver citada lá.
 - `dev/harness.html` é uma página de teste da interface fora do app. Para usar, sirva a pasta do projeto (por exemplo `python -m http.server`) e abra `/dev/harness.html`.
 - `docs/` guarda as anotações da pesquisa sobre o TauriTavern e o modo Agent.

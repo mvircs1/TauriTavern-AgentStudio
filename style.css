@@ -870,3 +870,67 @@
         display: inline;
     }
 }
+
+/* ---------- estatísticas e habilidades ---------- */
+
+.agst-badge-accent {
+    color: var(--agst-accent);
+}
+
+.agst-sys-hint {
+    margin: -2px 0 6px;
+    line-height: 1.4;
+}
+
+.agst-stat.is-defense {
+    border-color: var(--agst-accent);
+}
+
+.agst-stat .agst-mod {
+    font-size: 1.3em;
+}
+
+.agst-stat-formula {
+    font-size: 0.75em;
+}
+
+.agst-ability-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.agst-ability-extras {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 12px;
+    margin-top: 4px;
+    font-size: 0.9em;
+}
+
+.agst-ability-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: 8px;
+}
+
+.agst-ability-grid label {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    font-size: 0.9em;
+}
+
+.agst-ability-grid .agst-sys-inline .text_pole {
+    flex: 1;
+    min-width: 0;
+}
+
+.agst-sys-form .checkbox_label {
+    margin: 0;
+}
+
+.agst-sys-inline select.text_pole {
+    width: auto;
+    flex: 1;
+}
