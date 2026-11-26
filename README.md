@@ -17,8 +17,13 @@ O Agent Studio adiciona duas coisas:
 
 O TauriTavern instala extensões a partir de uma **URL Git pública (https)**. Ele não aceita ZIP.
 
-1. Publique esta pasta num repositório público no GitHub, GitLab etc.
-2. No TauriTavern, abra **Extensões → Instalar extensão** e cole a URL do repositório.
+1. No TauriTavern, abra **Extensões → Instalar extensão**.
+2. Cole esta URL:
+
+   ```
+   https://github.com/mvircs1/TauriTavern-AgentStudio
+   ```
+
 3. Recarregue a página, se ele pedir.
 
 ## Configuração (uma vez)

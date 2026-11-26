@@ -5,8 +5,8 @@
     "optional": [],
     "js": "index.js",
     "css": "style.css",
-    "author": "Agent Studio",
+    "author": "mvircs1",
     "version": "0.1.0",
-    "homePage": "",
+    "homePage": "https://github.com/mvircs1/TauriTavern-AgentStudio",
     "auto_update": false
 }
