@@ -58,6 +58,22 @@
             },
         };
         st.context.POPUP_RESULT = { AFFIRMATIVE: 1, NEGATIVE: 0 };
+        // Perfis de Conexão e geração simulados (para o Auto-preencher do mapa).
+        const fakePlan = JSON.stringify({
+            places: [
+                { name: "Aetheria", level: "world", type: "reino", summary: "Reino nas nuvens." },
+                { name: "Solenne", level: "region", parent: "Aetheria", type: "cidade", summary: "Capital de pedra branca." },
+                { name: "Taverna do Vento", level: "local", parent: "Solenne", type: "taverna", summary: "Barulhenta e quente.", residents: [{ name: "Mira", description: "taverneira" }] },
+                { name: "Mercado Alto", level: "local", parent: "Solenne", type: "mercado" },
+            ],
+            connections: [{ from: "Taverna do Vento", to: "Mercado Alto", description: "rua das lanternas", two_way: true }],
+        });
+        window.__fillCalls = [];
+        st.context.ConnectionManagerRequestService = {
+            getSupportedProfiles: () => [{ id: "p1", name: "Gemini Flash", model: "gemini-flash" }],
+            sendRequest: async (id, messages, max, options) => { window.__fillCalls.push({ id, messages, max, options }); await new Promise(r => setTimeout(r, 300)); return { content: "Aqui está:" + String.fromCharCode(10) + "`".repeat(3) + "json" + String.fromCharCode(10) + fakePlan + String.fromCharCode(10) + "`".repeat(3) }; },
+        };
+        st.context.generateRaw = async (input) => { window.__fillCalls.push({ raw: input }); return fakePlan; };
         st.SillyTavern.libs = {};
 
         const agent = createAgentMock();

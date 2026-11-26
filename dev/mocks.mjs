@@ -183,9 +183,14 @@ export function createSillyTavernMock() {
         name1: 'Aria',
         chat: [],
         eventSource,
-        eventTypes: { GENERATION_STARTED: 'generation_started', CHAT_CHANGED: 'chat_id_changed' },
+        eventTypes: { GENERATION_STARTED: 'generation_started', CHAT_CHANGED: 'chat_id_changed', WORLDINFO_FORCE_ACTIVATE: 'worldinfo_force_activate' },
         async deleteWorldInfo(name) {
             books.delete(name);
+        },
+        // Como no ST: guarda os blocos que extensões põem no prompt.
+        extensionPrompts: {},
+        setExtensionPrompt(key, value, position, depth, scan, role) {
+            context.extensionPrompts[key] = { value, position, depth, scan, role };
         },
         getCurrentChatId: () => state.chatId,
         get chatMetadata() {

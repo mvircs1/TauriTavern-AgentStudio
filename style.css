@@ -1064,3 +1064,181 @@
         height: 32px;
     }
 }
+
+/* ---------- Mapa ---------- */
+
+.agst-map {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.agst-map-toolbar {
+    flex-wrap: wrap;
+    padding: 6px 12px;
+    border-bottom: 1px solid var(--agst-border);
+}
+
+.agst-map-world.text_pole {
+    width: auto;
+    min-width: 140px;
+    max-width: 260px;
+    margin: 0;
+}
+
+.agst-map-position {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px 10px;
+    padding: 6px 12px;
+    border-bottom: 1px solid var(--agst-border);
+    font-size: 0.95em;
+}
+
+.agst-map-position .text_pole {
+    width: auto;
+    max-width: 320px;
+    margin: 0;
+}
+
+.agst-map-split {
+    flex: 1;
+    min-height: 0;
+}
+
+.agst-map-count {
+    margin-left: 4px;
+    font-size: 0.85em;
+}
+
+.agst-map-row.is-unknown .agst-row-name {
+    font-style: italic;
+    opacity: 0.7;
+}
+
+.agst-map-row .agst-row-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.agst-map-type {
+    font-size: 0.8em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.agst-map-here {
+    color: var(--agst-accent);
+}
+
+.agst-map-editor {
+    display: flex;
+    flex-direction: column;
+}
+
+.agst-place-form > label,
+.agst-fill > label {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    font-size: 0.9em;
+}
+
+.agst-place-form textarea.text_pole,
+.agst-fill textarea.text_pole {
+    resize: vertical;
+    min-height: 2.5em;
+}
+
+.agst-map-links {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.agst-map-link {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 8px;
+    border: 1px solid var(--agst-border);
+    border-radius: 6px;
+    overflow-wrap: anywhere;
+}
+
+.agst-map-link > span {
+    flex: 1;
+    min-width: 0;
+}
+
+.agst-map-add {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    margin-top: 6px;
+}
+
+.agst-map-add .text_pole {
+    flex: 1 1 160px;
+    width: auto;
+    min-width: 0;
+    margin: 0;
+}
+
+.agst-map-add .menu_button,
+.agst-map-add .checkbox_label {
+    margin: 0;
+}
+
+.agst-fill {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-width: 760px;
+}
+
+.agst-fill .text_pole {
+    width: 100%;
+    margin: 0;
+}
+
+.agst-fill-books {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 14px;
+}
+
+.agst-fill-books .checkbox_label {
+    margin: 0;
+}
+
+.agst-fill-list {
+    margin: 0;
+    padding-left: 20px;
+    line-height: 1.5;
+}
+
+.agst-fill .agst-banner {
+    position: static;
+}
+
+@media (max-width: 760px) {
+    /* Editando um lugar no celular: o editor fica com a tela toda. */
+    .agst-map:has(.agst-show-editor) .agst-map-position,
+    .agst-map:has(.agst-show-editor) .agst-map-toolbar {
+        display: none;
+    }
+
+    .agst-map-world.text_pole {
+        flex: 1;
+        max-width: none;
+    }
+
+    .agst-map-position .text_pole {
+        flex: 1;
+        max-width: none;
+    }
+}

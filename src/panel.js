@@ -14,6 +14,7 @@ import {
     parentPath,
 } from './util.js';
 import { SystemView } from './system-panel.js';
+import { MapView } from './map-panel.js';
 import { confirmDialog, downloadText, promptText, renderMarkdown } from './ui.js';
 
 const REASON_LABELS = {
@@ -33,17 +34,21 @@ const TOOL_LABELS = {
     lorebook_delete_entry: 'Excluir entrada', lorebook_create_book: 'Criar lorebook',
     system_info: 'Ver sistema', system_roll: 'Teste', sheet_list: 'Fichas', sheet_read: 'Ler ficha',
     sheet_create: 'Criar ficha', sheet_update: 'Editar ficha', sheet_resource: 'Recurso', sheet_delete: 'Excluir ficha',
+    map_look: 'Ver local', map_create: 'Criar lugar', map_update: 'Editar lugar', map_connect: 'Conectar lugares',
+    map_move: 'Mover', map_search: 'Buscar lugar', map_delete: 'Excluir lugar', ui_map_fill: 'Mapa (preenchimento)',
     ui_roll: 'Teste (você)',
     undo: 'Desfeito',
 };
 
 export class StudioPanel {
-    constructor({ fs, lore, activity, system }) {
+    constructor({ fs, lore, activity, system, map }) {
         this.fs = fs;
         this.lore = lore;
         this.activity = activity;
         this.system = system;
+        this.map = map;
         this.systemView = null;
+        this.mapView = null;
         this.root = null;
         this.tab = 'files';
         this.data = { files: [], folders: [], trashCount: 0 };
@@ -107,6 +112,7 @@ export class StudioPanel {
                     <nav class="agst-tabs">
                         <button type="button" class="agst-tab" data-tab="files"><i class="fa-solid fa-folder"></i><span>Arquivos</span></button>
                         <button type="button" class="agst-tab" data-tab="system"><i class="fa-solid fa-dice-d20"></i><span>Sistema</span></button>
+                        <button type="button" class="agst-tab" data-tab="map"><i class="fa-solid fa-map-location-dot"></i><span>Mapa</span></button>
                         <button type="button" class="agst-tab" data-tab="backups"><i class="fa-solid fa-clock-rotate-left"></i><span>Backups</span></button>
                         <button type="button" class="agst-tab" data-tab="activity"><i class="fa-solid fa-list-check"></i><span>Atividade</span></button>
                         <button type="button" class="agst-tab" data-tab="trash"><i class="fa-solid fa-trash-can"></i><span>Lixeira</span></button>
@@ -153,6 +159,8 @@ export class StudioPanel {
                 </section>
 
                 <section class="agst-panel agst-system" data-panel="system" hidden></section>
+
+                <section class="agst-panel agst-system" data-panel="map" hidden></section>
 
                 <section class="agst-panel agst-list-panel" data-panel="backups" hidden>
                     <div class="agst-list-toolbar">
@@ -205,6 +213,19 @@ export class StudioPanel {
             if (this.isOpen() && this.tab === 'system') this.systemView.refresh();
         });
 
+        if (this.map) {
+            this.mapView = new MapView({
+                map: this.map,
+                lore: this.lore,
+                activity: this.activity,
+                container: root.querySelector('[data-panel="map"]'),
+            });
+            this.mapView.mount();
+            this.map.onChange(() => {
+                if (this.isOpen() && this.tab === 'map') this.mapView.refresh();
+            });
+        }
+
         this.fs.onChange(() => this.scheduleRefresh());
         this.lore.onChange(change => {
             if (change.type === 'backup' && this.isOpen() && this.tab === 'backups') this.renderBackups();
@@ -229,6 +250,7 @@ export class StudioPanel {
         const render = {
             files: () => this.refreshFiles(),
             system: () => this.systemView.render(),
+            map: () => this.mapView?.render(),
             backups: () => this.renderBackups(),
             activity: () => this.renderActivity(),
             trash: () => this.renderTrash(),
@@ -247,7 +269,8 @@ export class StudioPanel {
             this.switchTab(tabButton.dataset.tab);
             return;
         }
-        const row = event.target.closest('.agst-row');
+        // Só as linhas da árvore de arquivos (o Mapa tem as próprias linhas e trata os cliques sozinho).
+        const row = event.target.closest('[data-panel="files"] .agst-row');
         if (row && this.root.contains(row)) {
             this.onRowClick(row);
             return;
@@ -264,7 +287,7 @@ export class StudioPanel {
                 case 'delete': await this.deleteSelected(); break;
                 case 'collapse': this.expanded.clear(); this.renderTree(); break;
                 case 'refresh': await this.refreshFiles(); break;
-                case 'back': this.root.querySelector('.agst-files').classList.remove('agst-show-editor'); break;
+                case 'back': this.root.querySelector('[data-panel="files"]').classList.remove('agst-show-editor'); break;
                 case 'save': await this.save(); break;
                 case 'toggle-preview': this.togglePreview(); break;
                 case 'reload-file': await this.reloadCurrent(); break;
@@ -463,7 +486,7 @@ export class StudioPanel {
 
     async openFile(id, { skipDirtyCheck = false } = {}) {
         if (this.current?.id === id && !this.current.deleted) {
-            this.root.querySelector('.agst-files').classList.add('agst-show-editor');
+            this.root.querySelector('[data-panel="files"]').classList.add('agst-show-editor');
             this.renderTree();
             return;
         }
@@ -478,7 +501,7 @@ export class StudioPanel {
         this.hideBanner();
         this.$('editor-empty').hidden = true;
         this.$('editor').hidden = false;
-        this.root.querySelector('.agst-files').classList.add('agst-show-editor');
+        this.root.querySelector('[data-panel="files"]').classList.add('agst-show-editor');
         this.updateEditorInfo();
         if (this.preview) this.renderPreview();
         this.renderTree();
@@ -490,7 +513,7 @@ export class StudioPanel {
         this.hideBanner();
         this.$('editor').hidden = true;
         this.$('editor-empty').hidden = false;
-        this.root.querySelector('.agst-files').classList.remove('agst-show-editor');
+        this.root.querySelector('[data-panel="files"]').classList.remove('agst-show-editor');
         this.renderTree();
     }
 

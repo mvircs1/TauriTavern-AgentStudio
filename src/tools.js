@@ -14,7 +14,34 @@ export const TOOL_GROUPS = Object.freeze({
     loreRead: 'loreReadTools',
     loreWrite: 'loreWriteTools',
     system: 'systemTools',
+    map: 'mapTools',
 });
+
+const PLACE_PARAM = { type: 'string', description: 'Place name or path like "Solenne/Taverna do Corvo".' };
+const RESIDENT_LIST = {
+    type: 'array',
+    description: 'NPCs without a sheet who live/work here (bartender, guards...).',
+    items: {
+        type: 'object',
+        properties: {
+            name: { type: 'string', description: 'NPC name.' },
+            description: { type: 'string', description: 'Role in a few words.' },
+        },
+        required: ['name'],
+    },
+};
+const LORE_REFS = {
+    type: 'array',
+    description: 'Lorebook entries about this place: they are activated only while the player is here.',
+    items: {
+        type: 'object',
+        properties: {
+            book: { type: 'string', description: 'Lorebook name.' },
+            uid: { type: 'integer', description: 'Entry uid.' },
+        },
+        required: ['book', 'uid'],
+    },
+};
 
 const SHEET_PARAM = { type: 'string', description: 'Sheet name or id (from sheet_list). Omit for the player\'s sheet.' };
 const ATTRIBUTE_VALUES = {
@@ -219,6 +246,38 @@ const ARG_ALIASES = {
         check: ['roll', 'test', 'attack_with', 'pericia'],
         effect: ['damage', 'dice', 'efeito', 'dano'],
     },
+    map_look: { place: ['location', 'name', 'where', 'local', 'lugar'] },
+    map_create: {
+        name: ['place', 'title', 'nome'],
+        level: ['kind', 'nivel', 'tier', 'scale'],
+        parent: ['inside', 'parent_place', 'within', 'in', 'region', 'pai'],
+        type: ['category', 'tipo'],
+        summary: ['description', 'short_description', 'resumo'],
+        details: ['detail', 'notes', 'detalhes'],
+        secret: ['secrets', 'gm_notes', 'segredo'],
+        residents: ['npcs', 'inhabitants', 'moradores'],
+        connect_to: ['connections', 'exits', 'connect', 'links'],
+        lorebook_entries: ['lorebook', 'lore', 'entries'],
+        move_player_here: ['move_player', 'enter', 'go_there'],
+    },
+    map_update: {
+        place: ['location', 'where', 'lugar'],
+        summary: ['description', 'resumo'],
+        details: ['detail', 'notes', 'detalhes'],
+        secret: ['secrets', 'gm_notes', 'segredo'],
+        add_residents: ['residents', 'npcs', 'add_npcs'],
+        remove_residents: ['remove_npcs'],
+        link_lorebook: ['lorebook_entries', 'lorebook', 'lore'],
+    },
+    map_connect: {
+        from: ['source', 'origin', 'place', 'de'],
+        to: ['target', 'destination', 'dest', 'para'],
+        description: ['path', 'how', 'route', 'descricao'],
+        two_way: ['twoWay', 'bidirectional', 'both_ways'],
+    },
+    map_move: { to: ['place', 'destination', 'location', 'where', 'para'], who: ['character', 'npc', 'sheet', 'quem'] },
+    map_search: { query: QUERY_ALIASES },
+    map_delete: { place: ['location', 'name', 'lugar'] },
     ability_use: {
         sheet: [...SHEET_ALIASES, 'user', 'caster', 'attacker'],
         ability: ['ability_name', 'name', 'skill', 'power', 'spell', 'habilidade'],
@@ -402,7 +461,7 @@ const STUDIO_INTRO ='The Agent Studio is the user\'s persistent, GLOBAL file spa
 /**
  * @param {{ fs: import('./studio-fs.js').StudioFS, lore: import('./lorebook.js').LorebookService }} services
  */
-export function buildToolDefinitions({ fs, lore, system }) {
+export function buildToolDefinitions({ fs, lore, system, map }) {
     return [
         // ---------- estúdio ----------
         {
@@ -892,6 +951,181 @@ export function buildToolDefinitions({ fs, lore, system }) {
                 const verb = { added: 'Deu', stacked: 'Somou', updated: 'Mudou', removed: 'Tirou', used_up: 'Acabou' }[result.action] ?? 'Mudou';
                 return `${verb} o item "${name}"${where} de ${result.sheet}`;
             },
+        },
+
+        // ---------- mapa ----------
+        {
+            name: 'map_look',
+            group: TOOL_GROUPS.map,
+            description: 'Look at the map: where the player is (or a given place): path (world › region › local), summary, details, narrator-only secret, places inside, exits (connections, with unexplored/locked/hidden flags), residents and NPCs with sheets who are here. The map has three levels: world (continents, kingdoms), region (cities, wilderness) and local (taverns, shops, rooms). Only the current place goes into the prompt automatically, so look things up here instead of guessing.',
+            inputSchema: { type: 'object', properties: { place: { ...PLACE_PARAM, description: 'Place to look at (default: where the player is).' } } },
+            run: args => map.look({ place: args.place }),
+            summarize: (args, result) => (result.name ? `Olhou o mapa: ${result.path}` : 'Olhou o mapa (vazio)'),
+        },
+        {
+            name: 'map_create',
+            group: TOOL_GROUPS.map,
+            description: 'Create a place on the map when the story introduces or reaches it. Level: "world" (largest areas), "region" (city, forest, district; inside a world-level place) or "local" (specific place; inside a region or another local). Without "parent", a region goes into the current world-level place and a local into the current region. Use connect_to to link it to neighbouring places, residents for NPCs without sheets, and move_player_here when the player arrives there now. Places the player only hears about can be created with known: false.',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    name: { type: 'string', description: 'Place name.' },
+                    level: { type: 'string', enum: ['world', 'region', 'local'], description: 'Default: one level below the parent (local if unsure).' },
+                    parent: { ...PLACE_PARAM, description: 'Containing place.' },
+                    type: { type: 'string', description: 'Short type: tavern, city, forest, kingdom...' },
+                    summary: { type: 'string', description: '1-2 sentences of what is noticed there (goes into the prompt while the player is there).' },
+                    details: { type: 'string', description: 'More detail for the narrator (looked up with map_look).' },
+                    secret: { type: 'string', description: 'Hidden fact only the narrator knows.' },
+                    residents: RESIDENT_LIST,
+                    connect_to: {
+                        type: 'array',
+                        description: 'Connections to existing places.',
+                        items: {
+                            type: 'object',
+                            properties: {
+                                place: { type: 'string', description: 'Existing place name.' },
+                                description: { type: 'string', description: 'Door, road (1 day east), stairs...' },
+                                two_way: { type: 'boolean', description: 'Default true.' },
+                                locked: { type: 'boolean', description: 'Locked/blocked for now.' },
+                                hidden: { type: 'boolean', description: 'Secret passage (not shown to the player).' },
+                            },
+                            required: ['place'],
+                        },
+                    },
+                    lorebook_entries: LORE_REFS,
+                    known: { type: 'boolean', description: 'Whether the player knows this place exists (default true).' },
+                    move_player_here: { type: 'boolean', description: 'Also move the player here now.' },
+                },
+                required: ['name'],
+            },
+            run: (args, context) => map.create({
+                name: args.name,
+                level: args.level,
+                parent: args.parent,
+                type: args.type,
+                summary: args.summary,
+                details: args.details,
+                secret: args.secret,
+                residents: args.residents,
+                connectTo: args.connect_to,
+                lorebookEntries: args.lorebook_entries,
+                known: args.known,
+                movePlayerHere: args.move_player_here === true,
+                runId: context.runId,
+            }),
+            summarize: (args, result) => `Criou o lugar ${result.path}${result.player_moved_here ? ' (e levou o jogador)' : ''}`,
+        },
+        {
+            name: 'map_update',
+            group: TOOL_GROUPS.map,
+            description: 'Change a place: name, type, summary, details, secret, parent; add or remove residents (NPCs without sheets); link lorebook entries (activated only while the player is there); mark it as known/unknown to the player. Default place: where the player is.',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    place: { ...PLACE_PARAM, description: 'Place to change (default: where the player is).' },
+                    name: { type: 'string', description: 'New name.' },
+                    type: { type: 'string', description: 'New type.' },
+                    summary: { type: 'string', description: 'New summary.' },
+                    details: { type: 'string', description: 'New details (replaces).' },
+                    secret: { type: 'string', description: 'New secret (replaces).' },
+                    parent: { ...PLACE_PARAM, description: 'Move it inside another place ("none" for no parent).' },
+                    add_residents: RESIDENT_LIST,
+                    remove_residents: { type: 'array', items: { type: 'string', description: 'Resident name.' }, description: 'Residents to remove.' },
+                    link_lorebook: LORE_REFS,
+                    unlink_lorebook: LORE_REFS,
+                    known: { type: 'boolean', description: 'Whether the player knows this place.' },
+                },
+            },
+            run: (args, context) => map.update({
+                place: args.place,
+                name: args.name,
+                type: args.type,
+                summary: args.summary,
+                details: args.details,
+                secret: args.secret,
+                parent: args.parent,
+                addResidents: args.add_residents,
+                removeResidents: args.remove_residents,
+                linkLorebook: args.link_lorebook,
+                unlinkLorebook: args.unlink_lorebook,
+                known: args.known,
+                runId: context.runId,
+            }),
+            summarize: (args, result) => `Editou o lugar ${result.updated} (${result.fields.join(', ')})`,
+        },
+        {
+            name: 'map_connect',
+            group: TOOL_GROUPS.map,
+            description: 'Connect two places (or change/remove a connection): doors between rooms, streets between buildings, roads between cities, borders between kingdoms. Default "from": where the player is.',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    from: { ...PLACE_PARAM, description: 'First place (default: where the player is).' },
+                    to: { ...PLACE_PARAM, description: 'Second place.' },
+                    description: { type: 'string', description: 'How they connect: door, road (2 days north), stairs, portal...' },
+                    two_way: { type: 'boolean', description: 'Default true.' },
+                    locked: { type: 'boolean', description: 'Locked/blocked.' },
+                    hidden: { type: 'boolean', description: 'Secret (not shown to the player in the prompt).' },
+                    remove: { type: 'boolean', description: 'Remove the connection instead.' },
+                },
+                required: ['to'],
+            },
+            run: (args, context) => map.connect({
+                from: args.from,
+                to: args.to,
+                description: args.description,
+                twoWay: args.two_way !== false,
+                hidden: args.hidden === true,
+                locked: args.locked === true,
+                remove: args.remove === true,
+                runId: context.runId,
+            }),
+            summarize: (args, result) => (result.removed ? `Removeu a conexão ${result.removed}` : `Conectou ${result.connected}`),
+        },
+        {
+            name: 'map_move',
+            group: TOOL_GROUPS.map,
+            description: 'Move the player (default) or an NPC to a place. Do it EVERY time the player changes location in the story, so the location in the prompt stays correct. "who" can be an NPC with a sheet or a resident without a sheet; to "none" takes an NPC off the map.',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    to: { ...PLACE_PARAM, description: 'Destination place.' },
+                    who: { type: 'string', description: 'Default: the player. Or an NPC name.' },
+                },
+                required: ['to'],
+            },
+            run: (args, context) => map.move({ to: args.to, who: args.who, runId: context.runId }),
+            summarize: (args, result) => `Moveu ${result.moved === 'player' ? 'o jogador' : result.moved} para ${result.to}`,
+        },
+        {
+            name: 'map_search',
+            group: TOOL_GROUPS.map,
+            description: 'Search places by name, type, description or residents (ignores accents/case).',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    query: { type: 'string', description: 'Text to search for.' },
+                    limit: { type: 'integer', description: 'Maximum results (default 20).' },
+                },
+                required: ['query'],
+            },
+            run: args => map.search({ query: args.query, limit: args.limit }),
+            summarize: (args, result) => `Buscou "${args.query}" no mapa (${result.results.length})`,
+        },
+        {
+            name: 'map_delete',
+            group: TOOL_GROUPS.map,
+            description: 'Delete a place (destroyed, never existed). With places inside it, pass recursive: true.',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    place: PLACE_PARAM,
+                    recursive: { type: 'boolean', description: 'Also delete the places inside.' },
+                },
+                required: ['place'],
+            },
+            run: (args, context) => map.deletePlace({ place: args.place, recursive: args.recursive === true, runId: context.runId }),
+            summarize: (args, result) => `Excluiu o lugar ${result.deleted} (${result.places_removed})`,
         },
     ];
 }

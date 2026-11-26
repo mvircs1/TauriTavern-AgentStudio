@@ -158,11 +158,12 @@ export function runIdsOfMessage(message) {
  * - quando uma run falha ou é cancelada sem deixar mensagem no chat.
  */
 export class RollbackManager {
-    constructor({ journal, fs, lore, system, activity, getSettings }) {
+    constructor({ journal, fs, lore, system, map = null, activity, getSettings }) {
         this.journal = journal;
         this.fs = fs;
         this.lore = lore;
         this.system = system;
+        this.map = map;
         this.activity = activity;
         this.getSettings = getSettings;
         this.watching = new Map();
@@ -232,11 +233,12 @@ export class RollbackManager {
     async undo(runIds, reason) {
         const runs = await this.journal.takeForUndo(runIds);
         if (!runs.length) return null;
-        const totals = { files: 0, lorebooks: 0, sheets: 0, skipped: 0 };
+        const totals = { files: 0, lorebooks: 0, sheets: 0, map: 0, skipped: 0 };
         for (const run of runs) {
             const studio = run.entries.filter(entry => entry.kind.startsWith('studio_'));
             const lore = run.entries.filter(entry => entry.kind.startsWith('lorebook'));
             const sheets = run.entries.filter(entry => entry.kind === 'sheet');
+            const map = run.entries.filter(entry => entry.kind.startsWith('map_'));
             if (studio.length) totals.files += await this.fs.undoEntries(studio);
             if (lore.length) totals.lorebooks += await this.lore.undoEntries(lore);
             if (sheets.length) {
@@ -244,11 +246,13 @@ export class RollbackManager {
                 totals.sheets += result.restored;
                 totals.skipped += result.skipped;
             }
+            if (map.length && this.map) totals.map += await this.map.undoEntries(map, run.chatId);
         }
         const parts = [];
         if (totals.files) parts.push(`${totals.files} arquivo(s)`);
         if (totals.lorebooks) parts.push(`${totals.lorebooks} lorebook(s)`);
         if (totals.sheets) parts.push(`${totals.sheets} ficha(s)`);
+        if (totals.map) parts.push('mapa');
         if (parts.length) {
             const summary = `Desfeito (${reason}): ${parts.join(', ')}`;
             this.activity.add({ tool: 'undo', ok: true, summary });

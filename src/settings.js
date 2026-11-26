@@ -11,6 +11,9 @@ export const DEFAULT_SETTINGS = Object.freeze({
     loreReadTools: true,
     loreWriteTools: true,
     systemTools: true,
+    mapTools: true,
+    mapPrompt: true,
+    mapLore: true,
     undoOnRegenerate: true,
     backupsPerBook: 20,
 });
@@ -77,6 +80,20 @@ export function renderSettingsDrawer({ bridge, panel, storageKind }) {
                 <label class="checkbox_label" title="Ao regenerar uma resposta ou gerar uma nova swipe, o que o Agent mudou naquela resposta (arquivos, lorebooks, fichas) volta ao estado anterior. Também desfaz runs que falham ou são canceladas.">
                     <input type="checkbox" data-setting="undoOnRegenerate">
                     <span>Desfazer as alterações do Agent ao regenerar / gerar nova swipe</span>
+                </label>
+
+                <h4>Mapa</h4>
+                <label class="checkbox_label">
+                    <input type="checkbox" data-setting="mapTools">
+                    <span>Ferramentas de mapa (o Agent cria lugares, conexões e move personagens)</span>
+                </label>
+                <label class="checkbox_label" title="Um bloco curto com o local atual, as saídas e quem está lá vai para o prompt (modo normal e Agent).">
+                    <input type="checkbox" data-setting="mapPrompt">
+                    <span>Colocar o local atual no prompt</span>
+                </label>
+                <label class="checkbox_label" title="Entradas de lorebook vinculadas ao local atual (e aos NPCs com ficha que estão nele) são ativadas sem precisar de palavra-chave. Deixe essas entradas sem chave para que só apareçam no lugar certo.">
+                    <input type="checkbox" data-setting="mapLore">
+                    <span>Ativar as entradas de lorebook do local atual</span>
                 </label>
                 <div class="agst-settings-row">
                     <label for="agst_backups_per_book">Backups guardados por lorebook</label>

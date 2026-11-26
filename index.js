@@ -2,9 +2,12 @@
 // 1) Um estúdio global de arquivos que o Agent (e você) organiza, cria e edita.
 // 2) Ferramentas para o Agent ler e editar os lorebooks (World Info), com backup automático.
 // 3) Um sistema de RPG simples (atributos, perícias, Vida/Mana, testes de d20) com fichas.
+// 4) Mapas em três níveis (mundo, região, local), com o local atual no prompt.
 
 import { ActivityLog } from './src/activity.js';
 import { LorebookService } from './src/lorebook.js';
+import { MapService } from './src/map.js';
+import { LocationPrompt } from './src/map-prompt.js';
 import { StudioPanel } from './src/panel.js';
 import { getSettings, renderSettingsDrawer } from './src/settings.js';
 import { createStorage } from './src/storage.js';
@@ -70,6 +73,7 @@ async function init() {
     await activity.load();
     const system = new SystemService(storage, lore);
     await system.run(() => undefined);
+    const map = new MapService(storage, lore, system);
 
     // Diário por run: permite desfazer o que o Agent fez numa resposta regenerada/descartada.
     const journal = new RunJournal(storage, {
@@ -81,15 +85,19 @@ async function init() {
     fs.journal = journal;
     lore.journal = journal;
     system.journal = journal;
-    const rollback = new RollbackManager({ journal, fs, lore, system, activity, getSettings });
+    map.journal = journal;
+    // A ordem importa: primeiro desfaz (ao regenerar), depois atualiza o local no prompt.
+    const rollback = new RollbackManager({ journal, fs, lore, system, map, activity, getSettings });
     rollback.install();
+    const locationPrompt = new LocationPrompt({ map, system, getSettings });
+    locationPrompt.install();
 
     const bridge = new AgentToolBridge({
-        definitions: buildToolDefinitions({ fs, lore, system }),
+        definitions: buildToolDefinitions({ fs, lore, system, map }),
         activity,
         getSettings,
     });
-    const panel = new StudioPanel({ fs, lore, activity, system });
+    const panel = new StudioPanel({ fs, lore, activity, system, map });
 
     const drawer = renderSettingsDrawer({ bridge, panel, storageKind: storage.kind });
     addMenuButton(panel);
@@ -98,7 +106,12 @@ async function init() {
     // Trocar de chat muda quais fichas estão visíveis.
     const { eventSource, eventTypes, event_types: legacyEventTypes } = SillyTavern.getContext();
     const chatChanged = (eventTypes ?? legacyEventTypes)?.CHAT_CHANGED;
-    if (eventSource && chatChanged) eventSource.on(chatChanged, () => system.emit({ type: 'chat' }));
+    if (eventSource && chatChanged) {
+        eventSource.on(chatChanged, () => {
+            system.emit({ type: 'chat' });
+            map.emit({ type: 'chat' });
+        });
+    }
 
     if (bridge.isAvailable()) {
         await bridge.registerAll();
@@ -122,7 +135,7 @@ async function init() {
     drawer?.renderStatus();
 
     // Atalho para depuração pelo console: AgentStudio.fs.list(), AgentStudio.bridge.registeredIds() etc.
-    globalThis.AgentStudio = { fs, lore, activity, system, bridge, panel, storage, journal, rollback };
+    globalThis.AgentStudio = { fs, lore, activity, system, map, locationPrompt, bridge, panel, storage, journal, rollback };
     console.info(LOG_PREFIX, `Pronto. ${bridge.registeredIds().length} ferramenta(s) registrada(s); armazenamento: ${storage.kind}.`);
 }
 

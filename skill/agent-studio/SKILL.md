@@ -1,9 +1,9 @@
 ---
 name: agent-studio
-description: Guia das ferramentas do Agent Studio. Cobre o estúdio de arquivos persistente (studio_*), os lorebooks/World Info (lorebook_*) e o sistema de RPG com fichas, Vida/Mana, Defesa, perícias com treinamento, habilidades, itens/equipamento e testes de dados (system_*, sheet_*, ability_use). Leia no começo de qualquer run em que o usuário fale de lore, notas, organizar informações, lorebook, ficha, atributos, perícias, habilidades, magias, itens, equipamento, dano, cura, combate ou teste de dado.
-version: 0.6.0
+description: Guia das ferramentas do Agent Studio. Cobre o estúdio de arquivos persistente (studio_*), os lorebooks/World Info (lorebook_*) e o sistema de RPG com fichas, Vida/Mana, Defesa, perícias com treinamento, habilidades, itens/equipamento e testes de dados (system_*, sheet_*, ability_use), e o mapa do mundo em três níveis com a posição do jogador (map_*). Leia no começo de qualquer run em que o usuário fale de lore, notas, organizar informações, lorebook, ficha, atributos, perícias, habilidades, magias, itens, equipamento, dano, cura, combate, teste de dado, lugares, viagem ou mapa.
+version: 0.7.0
 author: mvircs1
-tags: [agent-studio, rpg, lorebook, world-info]
+tags: [agent-studio, rpg, lorebook, world-info, map]
 ---
 
 # Agent Studio: como usar as ferramentas
@@ -31,6 +31,11 @@ Depois de usar as ferramentas, escreva a resposta da história normalmente no se
 | Criar um NPC com ficha | `sheet_create` |
 | Mudar atributos, perícias, bônus de Defesa, notas ou vincular a lorebook | `sheet_update` |
 | Apagar a ficha de um NPC | `sheet_delete` |
+| Ver onde o jogador está, as saídas e quem está lá | `map_look` |
+| Criar um lugar novo (mundo, região ou local) | `map_create` |
+| Mover o jogador ou um NPC (toda vez que mudar de lugar) | `map_move` |
+| Ligar lugares, editar ou apagar um lugar | `map_connect`, `map_update`, `map_delete` |
+| Achar um lugar | `map_search` |
 | Ver quais lorebooks existem e quais estão ativos | `lorebook_list` |
 | Ler ou buscar entradas de lorebook | `lorebook_read`, `lorebook_search` |
 | Criar, editar ou apagar entradas de lorebook | `lorebook_create_entry`, `lorebook_update_entry`, `lorebook_delete_entry` |
@@ -193,7 +198,39 @@ Dar um item já equipado (`sheet_item`):
 
 Você não pode editar as regras (atributos, perícias, níveis de treinamento, partes do corpo, método de rolagem). Se a história pedir algo que não existe, sugira ao usuário criar na aba **Sistema** do Agent Studio.
 
-## 2. Lorebooks (World Info)
+## 2. Mapa (mundo › região › local)
+
+Um mapa por **mundo** (o usuário escolhe o mundo do chat; o padrão é o último usado com o personagem). Três níveis:
+
+- **world**: continentes, reinos, planos. Sem pai.
+- **region**: cidades, florestas, bairros. Dentro de um lugar `world`.
+- **local**: taverna, loja, quarto, clareira. Dentro de uma `region` ou de outro `local` (quarto dentro da taverna).
+
+**Só o local atual entra no prompt**, como um bloco `[Localização atual: …]` com resumo, lugares dentro, saídas e quem está lá. O resto do mapa fica fora para economizar tokens: consulte com `map_look` e `map_search` quando precisar. As entradas de lorebook vinculadas a um lugar só são ativadas enquanto o jogador está nele (ou dentro dele).
+
+O mapa pode começar vazio. **Crie os lugares conforme a história chega neles**, sem inventar o mundo inteiro de uma vez.
+
+1. `map_look {}` mostra onde o jogador está: caminho, resumo, detalhes, `secret` (só para você), saídas e quem está lá. Com `{"place": "Nome"}`, outro lugar.
+2. `map_create` cria um lugar. Sem `parent`, uma região vai para o mundo atual e um local para a região atual.
+
+```json
+{ "name": "Taverna do Corvo", "level": "local", "parent": "Solenne", "type": "taverna",
+  "summary": "Barulhenta, cheira a cerveja e fumaça.", "secret": "O dono esconde um mapa no porão.",
+  "residents": [{ "name": "Mira", "description": "taverneira" }],
+  "connect_to": [{ "place": "Rua do Mercado", "description": "porta da frente" }],
+  "move_player_here": true }
+```
+
+3. **`map_move {"to": "Nome"}` toda vez que o jogador mudar de lugar na história.** Sem isso o prompt mostra o lugar errado. Para um NPC: `{"who": "Voss", "to": "Porão"}`; `"to": "none"` tira um NPC do mapa.
+4. `map_connect {"from": "A", "to": "B", "description": "estrada (2 dias ao norte)"}` liga lugares. Use `"locked": true` para portas trancadas, `"hidden": true` para passagens secretas (ficam fora do prompt até serem descobertas; depois mude para `false`), `"two_way": false` para mão única e `"remove": true` para desfazer.
+5. `map_update` muda um lugar: textos, `parent`, `add_residents` / `remove_residents`, `link_lorebook` / `unlink_lorebook` (`[{"book": "…", "uid": 3}]`) e `known` (o jogador conhece ou não).
+6. `map_search {"query": "ferreiro"}` acha lugares por nome, tipo, texto ou morador. `map_delete` apaga um lugar destruído (com coisas dentro, `"recursive": true`).
+
+- **Moradores sem ficha** (`residents`) são figurantes do lugar: taverneira, guarda, mendigo. Personagens importantes ganham ficha (`sheet_create`) e se movem com `map_move {"who": …}`.
+- `summary` é curto (vai para o prompt). Descrição longa vai em `details`.
+- Os nomes ignoram acentos e maiúsculas (`"porao"` acha "Porão").
+
+## 3. Lorebooks (World Info)
 
 Os lorebooks injetam entradas no prompt quando as palavras-chave aparecem no chat. Toda alteração sua gera um **backup automático**, que o usuário pode restaurar.
 
@@ -221,7 +258,7 @@ Os lorebooks injetam entradas no prompt quando as palavras-chave aparecem no cha
 - **Mantenha o lorebook atualizado** quando a história estabelecer fatos novos e importantes: lugares, facções, relações, segredos revelados. Não crie entradas para detalhes passageiros.
 - Um lorebook criado com `lorebook_create_book` começa sem vínculo. Avise o usuário para vinculá-lo ao chat ou ao personagem.
 
-## 3. Estúdio de arquivos
+## 4. Estúdio de arquivos
 
 É o espaço **global e persistente** do usuário, compartilhado entre todos os chats e personagens. É diferente do seu workspace da run, que é temporário. Use para material de longo prazo: bíblias de mundo, linhas do tempo, planos de arco, fichas descritivas, ideias e notas de sessão.
 
@@ -240,6 +277,8 @@ Prefira Markdown, com títulos e listas curtas.
 ## Erros comuns
 
 - **"Sheet not found" / "Lorebook not found"**: a mensagem lista os nomes válidos. Use um deles.
+- **"Place not found"**: procure com `map_search` ou veja as saídas com `map_look`.
+- **"region must be inside a world-level place"**: respeite os níveis (mundo › região › local).
 - **"Unknown attribute/skill/resource"**: chame `system_info` e use os nomes exatos do usuário.
 - **"old_string not found"**: leia de novo e copie o trecho exato, com espaços e quebras de linha.
 - **A ferramenta não existe para você**: avise o usuário (veja o começo deste guia).

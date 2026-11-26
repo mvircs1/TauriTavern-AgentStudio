@@ -2,11 +2,12 @@
 
 Add-on para o **modo Agent do [TauriTavern](https://github.com/Darkatse/TauriTavern)**, que é o SillyTavern compilado em Rust e roda no Android.
 
-O Agent Studio adiciona três coisas:
+O Agent Studio adiciona quatro coisas:
 
 1. **Um estúdio de arquivos próprio.** É um espaço global, compartilhado entre todos os chats e personagens, onde o Agent organiza, cria e edita arquivos: bíblias de mundo, fichas de personagem, rascunhos de lore, planos de arco, linhas do tempo. Você também pode abrir, editar e organizar tudo por um painel visual.
 2. **Edição dos lorebooks (World Info) do SillyTavern/TT.** O Agent pode listar, ler e buscar entradas, além de criar, editar e excluir entradas e criar lorebooks novos. **Antes de cada alteração, o plugin guarda um backup** do lorebook, que você pode restaurar pelo painel.
-3. **Um sistema de RPG simples, sem nível nem XP.** Tem atributos, perícias e recursos como Vida e Mana, todos editáveis. Há fichas para o jogador e para NPCs, e testes de d20 com modificador no estilo D&D.
+3. **Um sistema de RPG simples, sem nível nem XP.** Tem atributos, perícias e recursos como Vida e Mana, todos editáveis. Há fichas para o jogador e para NPCs, e testes de dado com vários métodos (D&D, Ordem ou personalizado).
+4. **Um mapa do mundo** em três níveis (Mundo › Região › Local) que a IA cria e conecta enquanto narra. Só o lugar atual vai para o prompt, o que economiza tokens. Há botões para preencher ou refinar o mapa a partir dos lorebooks, com o modelo que você escolher.
 
 ## Requisitos
 
@@ -31,7 +32,7 @@ Para receber uma versão nova, use o botão de **atualizar** da extensão em Ext
 
 ## Configuração (uma vez)
 
-1. Em **Extensões**, abra a seção **Agent Studio**. O status deve mostrar "26 de 26 ferramentas registradas no Agent".
+1. Em **Extensões**, abra a seção **Agent Studio**. O status deve mostrar "33 de 33 ferramentas registradas no Agent".
 2. Em **Profile do Agent**, deixe selecionado **Agent Studio Writer (cópia do default-writer)** e toque em **Liberar ferramentas**.
    - O modelo só enxerga as ferramentas que estão liberadas no Profile ativo. O `default-writer` não pode ser editado, por isso o plugin cria uma cópia dele já com as ferramentas.
    - Se você já tem um Profile próprio, escolha ele na lista e libere as ferramentas nele.
@@ -43,6 +44,7 @@ Para receber uma versão nova, use o botão de **atualizar** da extensão em Ext
    - "organize o que sabemos sobre o reino no estúdio"
    - "crie uma entrada no lorebook da Lyra sobre a capital"
    - "faça um teste de Furtividade para mim"
+   - "vamos para a taverna do porto" (a IA cria o lugar no mapa e move você)
 
 ## Como abrir o estúdio
 
@@ -52,10 +54,11 @@ Há três caminhos:
 - o comando `/studio`;
 - o botão **Abrir o estúdio** nas configurações da extensão.
 
-O painel tem cinco abas:
+O painel tem seis abas:
 
 - **Arquivos**: árvore de pastas e editor, com visualização em Markdown. Para salvar, use **Ctrl+S** ou o botão. Se o Agent mudar o arquivo que você está editando, o painel avisa.
-- **Sistema**: fichas e regras do RPG, explicadas na próxima seção.
+- **Sistema**: fichas e regras do RPG, explicadas abaixo.
+- **Mapa**: mundos, lugares, conexões e onde o jogador está, explicado abaixo.
 - **Backups**: cópias dos lorebooks feitas antes de cada alteração do Agent, no máximo uma por lorebook a cada run. Daqui você restaura, exporta em JSON ou faz um backup manual.
 - **Atividade**: as últimas chamadas de ferramenta do Agent e o que cada uma fez, incluindo os testes de dado.
 - **Lixeira**: arquivos excluídos, por você ou pelo Agent, que ainda podem ser restaurados.
@@ -111,6 +114,37 @@ A IA lê as descrições, então descreva cada item do jeito que você quer que 
   - Um item tem nome, quantidade, descrição e um bônus opcional numa estatística ou perícia, por exemplo colete +2 Defesa. O bônus só vale enquanto o item está equipado.
   - O ➕ cria um item, o ✏️ edita ou muda de lugar, e os botões − e + gastam ou somam a quantidade.
 
+## Mapa
+
+Um mapa do mundo em três níveis, que a IA constrói enquanto narra:
+
+- **Mundo**: continentes, reinos, planos.
+- **Região**: cidades, florestas, bairros (dentro de um lugar do nível Mundo).
+- **Local**: taverna, loja, quarto (dentro de uma Região ou de outro Local).
+
+O mapa começa vazio e **não há local inicial**: a IA cria os lugares quando a história chega neles, com as conexões entre eles (portas, ruas, estradas, fronteiras). Cada vez que o jogador muda de lugar, ela move a posição com `map_move`.
+
+**Economia de tokens.** Só o **local atual** vai para o prompt, num bloco curto: caminho (Mundo › Região › Local), resumo, lugares dentro, saídas e quem está ali. O resto do mapa fica de fora; a IA consulta com `map_look` e `map_search` quando precisa.
+
+- **Moradores sem ficha** (taverneira, guarda) moram num lugar e só aparecem no prompt quando o jogador está lá. NPCs **com ficha** também têm posição, por chat.
+- **Lorebook por local**: vincule entradas de lorebook a um lugar. Elas são ativadas só enquanto o jogador está nele ou dentro dele. Deixe essas entradas sem palavra-chave para não aparecerem em outros lugares.
+- **Um mapa por mundo.** O chat escolhe o mundo, e o padrão é o último usado com o mesmo personagem. A posição do jogador e dos NPCs é de cada chat.
+- Ao regenerar a resposta, os lugares, conexões e movimentos feitos nela são desfeitos, como o resto.
+
+**Aba Mapa** (no painel):
+
+- seletor de mundo (criar, renomear, excluir) e "Você está em…", com um seletor para mudar a posição;
+- árvore Mundo › Região › Local, com filtro. Lugares em itálico ainda não foram visitados neste chat e 🚶 marca onde o jogador está;
+- editor do lugar: nome, tipo, "dentro de", resumo (vai para o prompt), detalhes, segredo (só o narrador sabe), moradores (um por linha, `Nome — papel`), conexões, NPCs com ficha presentes e entradas de lorebook vinculadas.
+
+**Auto-preencher e Refinar.** Para não começar do zero:
+
+1. Toque em **Auto-preencher** (cria os lugares que faltam) ou **Refinar** (melhora o que existe e completa o que falta).
+2. Escolha os **lorebooks de contexto** (vêm marcados os ativos no chat). A cena do chat **não** é enviada.
+3. Escolha o **modelo**: a conexão atual do narrador ou qualquer **Perfil de Conexão** (Chat Completion) que você tenha criado. Assim dá para usar uma API diferente da do narrador.
+4. Escreva um **prompt auxiliar**, se quiser, por exemplo "foque na capital e crie três tavernas".
+5. **Gerar** mostra uma prévia (lugares novos, atualizados, conexões e avisos). **Aplicar** grava. O botão **Desfazer** na aba volta o mapa ao que era antes do último preenchimento.
+
 ## Ferramentas que o Agent recebe
 
 | Ferramenta | O que faz |
@@ -140,14 +174,22 @@ A IA lê as descrições, então descreva cada item do jeito que você quer que 
 | `sheet_item` | Dá, equipa, guarda na mochila, consome ou remove itens |
 | `ability_use` | Usa uma habilidade: paga o custo, rola o teste contra a Defesa do alvo e rola o efeito, podendo aplicar dano ou cura |
 | `sheet_delete` | Exclui a ficha de um NPC |
-| `system_roll` | Teste de d20 + modificador contra uma CD ou contra a Defesa de outra ficha, com vantagem ou desvantagem |
+| `system_roll` | Teste com o método de dados do usuário contra uma CD ou contra a Defesa de outra ficha, com vantagem ou desvantagem |
+| `map_look` | Mostra onde o jogador está (ou outro lugar): caminho, resumo, detalhes, segredo, saídas e quem está lá |
+| `map_create` | Cria um lugar (mundo, região ou local), já com moradores, conexões e entradas de lorebook |
+| `map_update` | Muda um lugar: textos, pai, moradores, entradas de lorebook vinculadas, conhecido ou não |
+| `map_connect` | Liga dois lugares (porta, rua, estrada), com trancada, escondida ou mão única; ou remove a ligação |
+| `map_move` | Move o jogador ou um NPC (com ou sem ficha) para um lugar |
+| `map_search` | Busca lugares por nome, tipo, texto ou morador |
+| `map_delete` | Apaga um lugar (e, com `recursive`, o que tem dentro) |
 
-As configurações da extensão têm quatro interruptores: estúdio, leitura de lorebooks, edição de lorebooks e sistema.
+As configurações da extensão têm interruptores para o estúdio, a leitura de lorebooks, a edição de lorebooks, o sistema e o mapa. O mapa tem mais dois: colocar o local atual no prompt e ativar as entradas de lorebook do local.
 
 ## Onde ficam os dados
 
 - **No TauriTavern**, o estúdio, as regras, a ficha do jogador, as fichas vinculadas a lorebooks e os backups ficam na pasta de dados do app, em `_tauritavern/extension-store/agent_studio/`. Tudo isso entra no backup do próprio TT.
 - **No SillyTavern pelo navegador**, os mesmos dados ficam no IndexedDB do navegador.
+- **Os mapas** ficam no mesmo lugar, um por mundo. A posição do jogador e dos NPCs e o mundo escolhido ficam no próprio chat.
 - **Fichas de NPC do chat** ficam dentro do próprio chat (`chat_metadata`).
 
 Os lorebooks continuam sendo os arquivos normais do SillyTavern. O plugin só usa as funções oficiais de leitura e gravação.
@@ -156,14 +198,16 @@ Os lorebooks continuam sendo os arquivos normais do SillyTavern. O plugin só us
 
 - Um lorebook criado pelo Agent não é vinculado automaticamente a chat nem a personagem. O vínculo é feito no painel de World Info.
 - O Agent "vê" os lorebooks ativados no começo da run. Entradas que ele cria ou edita passam a valer nas próximas mensagens.
-- O estúdio e as fichas não entram no prompt sozinhos: o Agent consulta pelas ferramentas quando precisa.
+- O estúdio e as fichas não entram no prompt sozinhos: o Agent consulta pelas ferramentas quando precisa. Do mapa, só o local atual entra.
+- O bloco do local atual é atualizado antes de cada geração. Se a IA mover o jogador no meio de uma run, o prompt muda na próxima mensagem.
+- Auto-preencher com outro modelo precisa de um Perfil de Conexão do tipo Chat Completion.
 - Ainda não há histórico de versões dos arquivos do estúdio. Só existe a lixeira.
 - Ao regenerar uma resposta ou gerar nova swipe, o que o Agent mudou naquela resposta (arquivos, lorebooks, fichas) é desfeito automaticamente. Runs com erro ou canceladas também. Dá para desligar nas configurações.
 - A IA não edita as regras do sistema (atributos, perícias, recursos). Isso fica com você, na aba Sistema.
 
 ## Desenvolvimento
 
-- `node --test dev/core.test.mjs dev/system.test.mjs dev/skill.test.mjs dev/robust-undo.test.mjs dev/abilities.test.mjs dev/dice-items.test.mjs` roda os testes da lógica: estúdio, lorebooks, backups, registro das ferramentas, sistema de RPG e Skill. Eles usam simulações do SillyTavern e da API do TauriTavern 2.4.0.
+- `node --test dev/core.test.mjs dev/system.test.mjs dev/skill.test.mjs dev/robust-undo.test.mjs dev/abilities.test.mjs dev/dice-items.test.mjs dev/map.test.mjs` (ou `node --test "dev/*.test.mjs"`) roda os testes da lógica: estúdio, lorebooks, backups, registro das ferramentas, sistema de RPG, mapa e Skill. Eles usam simulações do SillyTavern e da API do TauriTavern 2.4.0.
 - Ao mudar ferramentas, atualize o `skill/agent-studio/SKILL.md` e a `version` dele. O teste da Skill falha se alguma ferramenta não estiver citada lá.
 - `dev/harness.html` é uma página de teste da interface fora do app. Para usar, sirva a pasta do projeto (por exemplo `python -m http.server`) e abra `/dev/harness.html`.
 - `docs/` guarda as anotações da pesquisa sobre o TauriTavern e o modo Agent.
