@@ -10,6 +10,7 @@ import { getSettings, renderSettingsDrawer } from './src/settings.js';
 import { createStorage } from './src/storage.js';
 import { StudioFS } from './src/studio-fs.js';
 import { SystemService } from './src/system.js';
+import { syncSkill } from './src/skill.js';
 import { AgentToolBridge, buildToolDefinitions } from './src/tools.js';
 import { LOG_PREFIX } from './src/util.js';
 
@@ -93,8 +94,18 @@ async function init() {
         } catch (error) {
             console.warn(LOG_PREFIX, 'Não consegui atualizar o Profile Agent Studio Writer', error);
         }
-        drawer?.renderStatus();
     }
+
+    // A Skill ensina o Agent a usar as ferramentas; instala ou atualiza sozinha.
+    try {
+        const skill = await syncSkill();
+        if (skill.status !== 'unavailable' && skill.status !== 'up-to-date') {
+            console.info(LOG_PREFIX, `Skill agent-studio: ${skill.status}.`);
+        }
+    } catch (error) {
+        console.warn(LOG_PREFIX, 'Não consegui instalar a Skill agent-studio', error);
+    }
+    drawer?.renderStatus();
 
     // Atalho para depuração pelo console: AgentStudio.fs.list(), AgentStudio.bridge.registeredIds() etc.
     globalThis.AgentStudio = { fs, lore, activity, system, bridge, panel, storage };

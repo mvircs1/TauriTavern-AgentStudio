@@ -636,6 +636,24 @@ export class AgentToolBridge {
         return { profileId: profile.id, displayName: profile.displayName, created, added: added.length };
     }
 
+    /** Quantas ferramentas do plugin um Profile libera (e quantas estão desligadas nas configurações). */
+    async profileCoverage(profileId = STUDIO_PROFILE_ID) {
+        if (!this.isAvailable()) return null;
+        const ids = this.registeredIds();
+        const disabled = this.definitions.filter(d => this.registered.has(d.name) && !this.isGroupEnabled(d.group)).length;
+        let profile = null;
+        try {
+            profile = (await this.agentApi.profiles.load(profileId))?.profile ?? null;
+        } catch {
+            profile = null;
+        }
+        if (!profile) return { exists: false, granted: 0, total: ids.length, disabled };
+        const allow = Array.isArray(profile.tools?.allow) ? profile.tools.allow : [];
+        const deny = Array.isArray(profile.tools?.deny) ? profile.tools.deny : [];
+        const granted = ids.filter(id => allow.includes(id) && !deny.includes(id)).length;
+        return { exists: true, granted, total: ids.length, disabled, displayName: profile.displayName };
+    }
+
     /** Se o Profile "Agent Studio Writer" já existe, libera nele as ferramentas novas desta versão. */
     async syncStudioProfile() {
         if (!this.isAvailable()) return null;

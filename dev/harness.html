@@ -39,7 +39,7 @@
     <div id="toasts"></div>
 
     <script type="module">
-        import { createAgentMock, createExtensionStoreMock, createSillyTavernMock } from './mocks.mjs';
+        import { createAgentMock, createExtensionStoreMock, createSillyTavernMock, createSkillMock } from './mocks.mjs';
 
         const st = createSillyTavernMock();
         st.books.set('Lyra Lore', {
@@ -62,8 +62,9 @@
 
         const agent = createAgentMock();
         window.SillyTavern = st.SillyTavern;
-        window.__TAURITAVERN__ = { ready: Promise.resolve(), api: { agent: agent.api, extension: { store: createExtensionStoreMock() } } };
-        window.__mock = { st, agent };
+        const skill = createSkillMock();
+        window.__TAURITAVERN__ = { ready: Promise.resolve(), api: { agent: agent.api, extension: { store: createExtensionStoreMock() }, skill } };
+        window.__mock = { st, agent, skill };
 
         const toast = color => (message, title) => {
             const div = document.createElement('div');

@@ -1,5 +1,6 @@
 // Configurações do plugin (extensionSettings.agentStudio) e a seção na aba de extensões.
 
+import { isSkillApiAvailable, skillStatus, syncSkill } from './skill.js';
 import { STUDIO_PROFILE_ID } from './tools.js';
 import { errorMessage, escapeHtml, LOG_PREFIX } from './util.js';
 
@@ -92,6 +93,25 @@ export function renderSettingsDrawer({ bridge, panel, storageKind }) {
                         <i class="fa-solid fa-rotate"></i>
                     </div>
                 </div>
+
+                <h4>Skill do Agent</h4>
+                <small class="agst-settings-hint">
+                    A Skill <code>agent-studio</code> ensina o Agent a usar as ferramentas (quando rolar dados, como atualizar Vida/Mana,
+                    como organizar o estúdio e os lorebooks). Ela é instalada sozinha; use o botão se precisar reinstalar.
+                </small>
+                <div class="agst-settings-row">
+                    <div class="menu_button menu_button_icon" data-action="install-skill">
+                        <i class="fa-solid fa-graduation-cap"></i><span>Instalar / atualizar Skill</span>
+                    </div>
+                </div>
+
+                <h4>Diagnóstico</h4>
+                <div class="agst-settings-status" data-role="diagnostics"></div>
+                <div class="agst-settings-row">
+                    <div class="menu_button menu_button_icon" data-action="diagnose">
+                        <i class="fa-solid fa-stethoscope"></i><span>Verificar de novo</span>
+                    </div>
+                </div>
             </div>
         </div>`;
     container.append(root);
@@ -99,6 +119,7 @@ export function renderSettingsDrawer({ bridge, panel, storageKind }) {
     const settings = getSettings();
     const statusEl = root.querySelector('[data-role="status"]');
     const selectEl = root.querySelector('[data-role="profile-select"]');
+    const diagnosticsEl = root.querySelector('[data-role="diagnostics"]');
 
     for (const input of root.querySelectorAll('[data-setting]')) {
         const key = input.dataset.setting;
@@ -137,7 +158,62 @@ export function renderSettingsDrawer({ bridge, panel, storageKind }) {
         }
         lines.push(`<span class="agst-muted">Armazenamento: ${storageKind === 'tauritavern' ? 'pasta de dados do TauriTavern' : 'navegador (IndexedDB)'}</span>`);
         statusEl.innerHTML = lines.join('<br>');
+        renderDiagnostics().catch(error => console.warn(LOG_PREFIX, 'Falha no diagnóstico', error));
     };
+
+    const ok = text => `<span class="agst-ok"><i class="fa-solid fa-circle-check"></i> ${text}</span>`;
+    const warn = text => `<span class="agst-warn"><i class="fa-solid fa-triangle-exclamation"></i> ${text}</span>`;
+
+    /** Mostra o que falta para o Agent enxergar as ferramentas. */
+    const renderDiagnostics = async () => {
+        const lines = [];
+        if (!bridge.isAvailable()) {
+            lines.push(warn('Sem TauriTavern 2.4.0+, não há ferramentas do Agent.'));
+        } else {
+            const coverage = await bridge.profileCoverage(STUDIO_PROFILE_ID);
+            if (!coverage?.exists) {
+                lines.push(warn('O Profile <b>Agent Studio Writer</b> ainda não existe. Toque em <b>Liberar ferramentas</b> acima.'));
+            } else if (coverage.granted < coverage.total) {
+                lines.push(warn(`Agent Studio Writer: só ${coverage.granted} de ${coverage.total} ferramentas liberadas. Toque em <b>Liberar ferramentas</b>.`));
+            } else {
+                lines.push(ok(`Agent Studio Writer: ${coverage.granted} de ${coverage.total} ferramentas liberadas.`));
+            }
+            if (coverage?.disabled) {
+                lines.push(warn(`${coverage.disabled} ferramenta(s) desligada(s) pelos interruptores acima.`));
+            }
+        }
+        if (isSkillApiAvailable()) {
+            const skill = await skillStatus().catch(() => ({ installed: false }));
+            lines.push(skill.installed
+                ? ok(`Skill <code>agent-studio</code> instalada${skill.version ? ` (v${escapeHtml(skill.version)})` : ''}.`)
+                : warn('Skill <code>agent-studio</code> não instalada. Toque em <b>Instalar / atualizar Skill</b>.'));
+        }
+        lines.push(`<span class="agst-muted">Se a IA ainda não usar as ferramentas, confira:
+            (1) o modo Agent está ligado (botão Agent perto do campo de mensagem);
+            (2) o <i>Active Profile</i> é o Agent Studio Writer (segure o botão Agent);
+            (3) a conexão é Chat Completion (o modo Agent não funciona com Text Completion);
+            (4) na timeline da run aparecem chamadas como <code>sheet_list</code>. Se não aparece nenhuma, as ferramentas não chegaram ao modelo.</span>`);
+        diagnosticsEl.innerHTML = lines.join('<br>');
+    };
+
+    root.querySelector('[data-action="diagnose"]').addEventListener('click', () => {
+        renderDiagnostics().catch(error => toastr.error(errorMessage(error), 'Agent Studio'));
+    });
+    root.querySelector('[data-action="install-skill"]').addEventListener('click', async () => {
+        if (!isSkillApiAvailable()) {
+            toastr.warning('Esta versão do TauriTavern não tem a API de Skills.');
+            return;
+        }
+        try {
+            const result = await syncSkill();
+            const label = { 'up-to-date': 'já estava atualizada', installed: 'instalada', replaced: 'atualizada' }[result.status] ?? result.status;
+            toastr.success(`Skill agent-studio ${label}.`, 'Agent Studio');
+            await renderDiagnostics();
+        } catch (error) {
+            console.error(LOG_PREFIX, error);
+            toastr.error(errorMessage(error), 'Agent Studio: falha ao instalar a Skill');
+        }
+    });
 
     const loadProfiles = async () => {
         selectEl.innerHTML = '';
@@ -175,6 +251,7 @@ export function renderSettingsDrawer({ bridge, panel, storageKind }) {
             toastr.success(`${what}: ${result.added} ferramenta(s) liberada(s). Escolha-o como Active Profile no painel do Agent.`, 'Agent Studio');
             await loadProfiles();
             selectEl.value = result.profileId;
+            await renderDiagnostics();
         } catch (error) {
             console.error(LOG_PREFIX, error);
             toastr.error(errorMessage(error), 'Agent Studio: falha ao liberar ferramentas');

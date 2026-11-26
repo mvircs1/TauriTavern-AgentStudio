@@ -37,6 +37,8 @@ Para receber uma versão nova, use o botão de **atualizar** da extensão em Ext
    - Se você já tem um Profile próprio, escolha ele na lista e libere as ferramentas nele.
    - Quando uma atualização traz ferramentas novas, o **Agent Studio Writer** recebe elas sozinho. Um Profile seu precisa ser liberado de novo.
 3. **Segure o botão Agent**, perto do campo de mensagem, e escolha **Agent Studio Writer** em *Active Profile*.
+   - A Skill `agent-studio` é instalada sozinha. Ela ensina o Agent a usar as ferramentas: quando rolar dados, como atualizar Vida e Mana, como organizar o estúdio e os lorebooks. O arquivo está em [`skill/agent-studio/SKILL.md`](skill/agent-studio/SKILL.md).
+   - A seção **Diagnóstico**, nas configurações da extensão, mostra se o Profile tem todas as ferramentas e se a Skill está instalada.
 4. Ative o modo Agent e converse normalmente. Alguns pedidos que funcionam:
    - "organize o que sabemos sobre o reino no estúdio"
    - "crie uma entrada no lorebook da Lyra sobre a capital"
@@ -129,7 +131,8 @@ Os lorebooks continuam sendo os arquivos normais do SillyTavern. O plugin só us
 
 ## Desenvolvimento
 
-- `node --test dev/core.test.mjs dev/system.test.mjs` roda os testes da lógica: estúdio, lorebooks, backups, registro das ferramentas e sistema de RPG. Eles usam simulações do SillyTavern e da API do TauriTavern 2.4.0.
+- `node --test dev/core.test.mjs dev/system.test.mjs dev/skill.test.mjs` roda os testes da lógica: estúdio, lorebooks, backups, registro das ferramentas, sistema de RPG e Skill. Eles usam simulações do SillyTavern e da API do TauriTavern 2.4.0.
+- Ao mudar ferramentas, atualize o `skill/agent-studio/SKILL.md` e a `version` dele. O teste da Skill falha se alguma ferramenta não estiver citada lá.
 - `dev/harness.html` é uma página de teste da interface fora do app. Para usar, sirva a pasta do projeto (por exemplo `python -m http.server`) e abra `/dev/harness.html`.
 - `docs/` guarda as anotações da pesquisa sobre o TauriTavern e o modo Agent.
 - No console do app, `AgentStudio` expõe os serviços para depuração, por exemplo `AgentStudio.bridge.registeredIds()` e `AgentStudio.system.readSheet()`.

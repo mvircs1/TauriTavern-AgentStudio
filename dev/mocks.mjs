@@ -198,3 +198,38 @@ export function createSillyTavernMock() {
     }
     return { context, books, stats, chats, switchChat, SillyTavern: { getContext: () => context, libs: {} } };
 }
+
+/** Simula window.__TAURITAVERN__.api.skill (importação de Skills com SKILL.md + frontmatter YAML). */
+export function createSkillMock() {
+    const installed = new Map();
+    const parse = files => {
+        const markdown = files.find(file => file.path === 'SKILL.md')?.content ?? '';
+        const frontmatter = /^---\r?\n([\s\S]*?)\r?\n---/.exec(markdown);
+        if (!frontmatter) throw new Error('SKILL.md must start with YAML frontmatter');
+        const field = key => (new RegExp(`^${key}:\s*(.+)$`, 'm').exec(frontmatter[1])?.[1] ?? '').trim();
+        const name = field('name');
+        if (!/^[a-z0-9_-]+$/.test(name)) throw new Error(`invalid skill name "${name}"`);
+        if (!field('description')) throw new Error('description is required');
+        return { name, version: field('version'), content: markdown };
+    };
+    return {
+        installed,
+        async previewImport(input) {
+            const skill = parse(input.files);
+            const current = installed.get(skill.name);
+            const kind = !current ? 'new' : current.content === skill.content ? 'same' : 'different';
+            return { skill: { name: skill.name }, files: input.files, conflict: { kind }, warnings: [], source: null };
+        },
+        async installImport({ input, conflictStrategy }) {
+            const skill = parse(input.files);
+            const current = installed.get(skill.name);
+            if (current?.content === skill.content) return { name: skill.name, action: 'already_installed' };
+            if (current && conflictStrategy !== 'replace') throw new Error('skill conflict');
+            installed.set(skill.name, skill);
+            return { name: skill.name, action: current ? 'replaced' : 'installed' };
+        },
+        async list() {
+            return [...installed.values()].map(skill => ({ name: skill.name, version: skill.version, description: '' }));
+        },
+    };
+}
