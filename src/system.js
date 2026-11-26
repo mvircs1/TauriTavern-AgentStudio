@@ -117,6 +117,39 @@ function normalizeSheet(sheet) {
     };
 }
 
+/**
+ * Acha um item pelo id ou nome, tolerando acentos/maiúsculas e nomes dentro de frases
+ * ("Teste de Furtividade" acha "Furtividade"). Só aceita um resultado inequívoco.
+ */
+function findByName(list, reference) {
+    const raw = String(reference ?? '').trim();
+    if (!raw) return null;
+    const wanted = normalizeName(raw);
+    const exact = list.find(item => item.id === raw) ?? list.find(item => normalizeName(item.name) === wanted);
+    if (exact) return exact;
+    const words = name => new RegExp(`(^|[^a-z0-9])${normalizeName(name).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}($|[^a-z0-9])`);
+    const inside = list.filter(item => words(item.name).test(wanted));
+    if (inside.length === 1) return inside[0];
+    if (inside.length > 1) return inside.sort((a, b) => b.name.length - a.name.length)[0];
+    const prefix = list.filter(item => wanted.length >= 3 && normalizeName(item.name).startsWith(wanted));
+    return prefix.length === 1 ? prefix[0] : null;
+}
+
+/** Aceita lista [{name, score}] ou mapa {"Força": 14} / {"Vida": {"max": 20}}. */
+function toChangeList(input) {
+    if (input === undefined || input === null) return [];
+    let value = input;
+    if (typeof value === 'string') {
+        try { value = JSON.parse(value); } catch { throw new Error('Expected a list like [{"name": "...", ...}].'); }
+    }
+    if (Array.isArray(value)) return value.filter(item => item && typeof item === 'object');
+    if (typeof value === 'object') {
+        if ('name' in value) return [value];
+        return Object.entries(value).map(([name, item]) => (item && typeof item === 'object' ? { name, ...item } : { name, value: item }));
+    }
+    throw new Error('Expected a list like [{"name": "...", ...}].');
+}
+
 function defaultRandom() {
     const buffer = new Uint32Array(1);
     globalThis.crypto.getRandomValues(buffer);
@@ -139,6 +172,8 @@ export class SystemService {
         this.index = null;
         this.sheetCache = new Map();
         this.listeners = new Set();
+        /** @type {import('./journal.js').RunJournal|null} */
+        this.journal = null;
         lore.sheetLinksForBook = book => this.sheetLinksForBook(book);
     }
 
@@ -197,9 +232,7 @@ export class SystemService {
     }
 
     findItem(kind, reference) {
-        const list = this.definition[kind];
-        const raw = String(reference ?? '').trim();
-        return list.find(item => item.id === raw) ?? list.find(item => normalizeName(item.name) === normalizeName(raw)) ?? null;
+        return findByName(this.definition[kind], reference);
     }
 
     requireItem(kind, reference) {
@@ -524,45 +557,136 @@ export class SystemService {
 
     // ---------- escrita ----------
 
-    applyChanges(sheet, { name, notes, attributes, skills, resources } = {}) {
-        if (name !== undefined) {
-            const clean = String(name).trim();
+    /**
+     * Aplica mudanças numa ficha. Listas podem vir como [{name, score}] ou mapas {"Força": 14}.
+     * `value` também é aceito no lugar de score/bonus; para recursos, `value` sozinho define o atual
+     * (ou atual e máximo ao criar).
+     */
+    applyChanges(sheet, { name, notes, attributes, skills, resources } = {}, { creating = false } = {}) {
+        if (name !== undefined && name !== null) {
+            const clean = String(name).normalize('NFC').trim();
             if (!clean) throw new Error('Sheet name cannot be empty.');
             sheet.name = clean.slice(0, MAX_NAME);
         }
-        if (notes !== undefined) sheet.notes = String(notes).slice(0, MAX_NOTES);
-        for (const change of attributes ?? []) {
-            const attribute = this.requireItem(KINDS.attributes, change?.name ?? change?.id);
-            sheet.attributes[attribute.id] = toInt(change.score, `${attribute.name} score`, SCORE_RANGE);
+        if (notes !== undefined && notes !== null) sheet.notes = String(notes).normalize('NFC').slice(0, MAX_NOTES);
+        for (const change of toChangeList(attributes)) {
+            const attribute = this.requireItem(KINDS.attributes, change.name ?? change.id);
+            sheet.attributes[attribute.id] = toInt(change.score ?? change.value, `${attribute.name} score`, SCORE_RANGE);
         }
-        for (const change of skills ?? []) {
-            const skill = this.requireItem(KINDS.skills, change?.name ?? change?.id);
-            sheet.skills[skill.id] = toInt(change.bonus, `${skill.name} bonus`, BONUS_RANGE);
+        for (const change of toChangeList(skills)) {
+            const skill = this.requireItem(KINDS.skills, change.name ?? change.id);
+            sheet.skills[skill.id] = toInt(change.bonus ?? change.value, `${skill.name} bonus`, BONUS_RANGE);
         }
-        for (const change of resources ?? []) {
-            const resource = this.requireItem(KINDS.resources, change?.name ?? change?.id);
+        for (const change of toChangeList(resources)) {
+            const resource = this.requireItem(KINDS.resources, change.name ?? change.id);
             const value = sheet.resources[resource.id] ?? { current: resource.defaultMax, max: resource.defaultMax };
-            if (change.max !== undefined && change.max !== null) value.max = toInt(change.max, `${resource.name} max`, RESOURCE_RANGE);
-            if (change.current !== undefined && change.current !== null) value.current = toInt(change.current, `${resource.name} current`, RESOURCE_RANGE);
+            let max = change.max;
+            let current = change.current;
+            if (change.value !== undefined && change.value !== null && max === undefined && current === undefined) {
+                current = change.value;
+                if (creating) max = change.value;
+            }
+            if (max !== undefined && max !== null) value.max = toInt(max, `${resource.name} max`, RESOURCE_RANGE);
+            if (current !== undefined && current !== null) value.current = toInt(current, `${resource.name} current`, RESOURCE_RANGE);
+            else if (creating && max !== undefined && max !== null) value.current = value.max;
             value.current = Math.min(value.current, value.max);
             sheet.resources[resource.id] = value;
         }
     }
 
-    createSheet({ name, notes, attributes, skills, resources, linkLorebook } = {}) {
+    // ---------- diário de alterações (desfazer ao regenerar) ----------
+
+    /** Guarda o estado da ficha antes da primeira mudança feita por uma run. */
+    async captureSheet(runId, item, scope) {
+        if (!runId || !this.journal) return;
+        await this.journal.capture(runId, `sheet:${item.sheet.id}`, async () => ({
+            kind: 'sheet',
+            id: item.sheet.id,
+            chatId: scope.chatId,
+            before: {
+                location: item.location,
+                sheet: structuredClone(item.sheet),
+                indexEntry: this.index[item.sheet.id] ? structuredClone(this.index[item.sheet.id]) : null,
+            },
+        }));
+    }
+
+    async captureNewSheet(runId, id, scope) {
+        if (!runId || !this.journal) return;
+        await this.journal.capture(runId, `sheet:${id}`, async () => ({ kind: 'sheet', id, chatId: scope.chatId, before: null }));
+    }
+
+    /**
+     * Volta as fichas tocadas por uma run ao estado anterior. Fichas de NPC guardadas num chat só
+     * podem ser desfeitas com esse chat aberto.
+     */
+    undoEntries(entries, chatId) {
         return this.run(async () => {
             const scope = this.scope();
-            const clean = String(name ?? '').trim();
+            const sameChat = !chatId || chatId === scope.chatId;
+            let restored = 0;
+            let skipped = 0;
+            let chatSheets = scope.hasChat && sameChat ? { ...this.chatSheets(scope) } : null;
+            let chatChanged = false;
+            let indexChanged = false;
+
+            for (const entry of [...entries].reverse()) {
+                const touchesChat = entry.before === null ? Boolean(chatSheets?.[entry.id]) || !this.index[entry.id] : entry.before.location === 'chat';
+                if (touchesChat && !chatSheets) {
+                    skipped++;
+                    continue;
+                }
+                // Remove a versão atual de onde quer que esteja.
+                if (chatSheets?.[entry.id]) {
+                    delete chatSheets[entry.id];
+                    chatChanged = true;
+                }
+                if (this.index[entry.id]) {
+                    delete this.index[entry.id];
+                    indexChanged = true;
+                    await this.storage.remove(SHEETS_TABLE, entry.id);
+                    this.sheetCache.delete(entry.id);
+                }
+                // Recoloca a versão de antes (se existia).
+                if (entry.before) {
+                    const sheet = normalizeSheet(entry.before.sheet);
+                    if (entry.before.location === 'chat') {
+                        chatSheets[entry.id] = sheet;
+                        chatChanged = true;
+                    } else {
+                        await this.storage.set(SHEETS_TABLE, entry.id, sheet);
+                        this.sheetCache.set(entry.id, sheet);
+                        if (entry.before.indexEntry) {
+                            this.index[entry.id] = structuredClone(entry.before.indexEntry);
+                            indexChanged = true;
+                        }
+                    }
+                }
+                restored++;
+            }
+            if (chatChanged) await this.writeChatSheets(scope, chatSheets);
+            if (indexChanged) await this.saveIndex();
+            if (restored) this.emit({ type: 'undo' });
+            return { restored, skipped };
+        });
+    }
+
+    createSheet({ name, notes, attributes, skills, resources, linkLorebook, runId } = {}) {
+        return this.run(async () => {
+            const scope = this.scope();
+            const clean = String(name ?? '').normalize('NFC').trim();
             if (!clean) throw new Error('"name" is required.');
             const existing = await this.visibleSheets(scope);
-            if (existing.some(item => normalizeName(item.sheet.name) === normalizeName(clean))) {
-                throw new Error(`A sheet named "${clean}" already exists here. Use sheet_update to change it.`);
+            const clash = existing.find(item => normalizeName(item.sheet.name) === normalizeName(clean));
+            if (clash) {
+                throw new Error(`A sheet named "${clash.sheet.name}" already exists here. Use sheet_update to change it.`);
             }
             const sheet = this.newSheet({ name: clean.slice(0, MAX_NAME), kind: 'npc' });
-            this.applyChanges(sheet, { notes, attributes, skills, resources });
+            this.applyChanges(sheet, { notes, attributes, skills, resources }, { creating: true });
 
             if (linkLorebook) {
                 const link = await this.lore.describeEntry(linkLorebook.book, linkLorebook.uid);
+                await this.captureNewSheet(runId, sheet.id, scope);
                 sheet.link = { book: link.book, uid: link.uid, title: link.title };
                 this.index[sheet.id] = { name: sheet.name, kind: 'npc', scope: { type: 'lore', book: link.book, uid: link.uid } };
                 await this.saveIndex();
@@ -570,20 +694,31 @@ export class SystemService {
                 return this.toolView({ sheet, location: 'lorebook' });
             }
             if (!scope.hasChat) throw new Error('No chat is open. Open a chat, or link the sheet to a lorebook entry with link_lorebook.');
+            await this.captureNewSheet(runId, sheet.id, scope);
             await this.persist({ sheet, location: 'chat' }, scope);
             return this.toolView({ sheet, location: 'chat' });
         });
     }
 
-    updateSheet(reference, { linkLorebook, unlinkLorebook, ...changes } = {}) {
+    updateSheet(reference, { linkLorebook, unlinkLorebook, runId, ...changes } = {}) {
         return this.run(async () => {
             const scope = this.scope();
             const item = await this.resolve(reference, scope);
-            this.applyChanges(item.sheet, changes);
-
+            // Valida numa cópia antes de registrar e mexer de verdade.
+            const draft = structuredClone(item.sheet);
+            this.applyChanges(draft, changes);
+            let link = null;
             if (linkLorebook) {
                 if (item.sheet.kind === 'player') throw new Error('The player sheet cannot be linked to a lorebook.');
-                const link = await this.lore.describeEntry(linkLorebook.book, linkLorebook.uid);
+                link = await this.lore.describeEntry(linkLorebook.book, linkLorebook.uid);
+            } else if (unlinkLorebook && item.location === 'lorebook' && !scope.hasChat) {
+                throw new Error('Open a chat to move the sheet back into it.');
+            }
+
+            await this.captureSheet(runId, item, scope);
+            Object.assign(item.sheet, draft);
+
+            if (link) {
                 item.sheet.link = { book: link.book, uid: link.uid, title: link.title };
                 if (item.location === 'chat') {
                     const sheets = { ...this.chatSheets(scope) };
@@ -594,7 +729,6 @@ export class SystemService {
                 await this.saveIndex();
                 item.location = 'lorebook';
             } else if (unlinkLorebook && item.location === 'lorebook') {
-                if (!scope.hasChat) throw new Error('Open a chat to move the sheet back into it.');
                 delete this.index[item.sheet.id];
                 await this.saveIndex();
                 await this.storage.remove(SHEETS_TABLE, item.sheet.id);
@@ -608,18 +742,20 @@ export class SystemService {
         });
     }
 
-    adjustResource(reference, { resource, delta, set } = {}) {
+    adjustResource(reference, { resource, delta, set, runId } = {}) {
         return this.run(async () => {
             const scope = this.scope();
             const item = await this.resolve(reference, scope);
             const definition = this.requireItem(KINDS.resources, resource);
-            const value = item.sheet.resources[definition.id] ?? { current: definition.defaultMax, max: definition.defaultMax };
-            const before = value.current;
+            const current = item.sheet.resources[definition.id] ?? { current: definition.defaultMax, max: definition.defaultMax };
+            const before = current.current;
             let target;
             if (set !== undefined && set !== null) target = toInt(set, 'set', { min: -RESOURCE_RANGE.max, max: RESOURCE_RANGE.max });
             else if (delta !== undefined && delta !== null) target = before + toInt(delta, 'delta', { min: -RESOURCE_RANGE.max, max: RESOURCE_RANGE.max });
             else throw new Error('Pass "delta" (e.g. -5 for damage, 3 for healing) or "set".');
-            value.current = Math.max(0, Math.min(value.max, target));
+
+            await this.captureSheet(runId, item, scope);
+            const value = { ...current, current: Math.max(0, Math.min(current.max, target)) };
             item.sheet.resources[definition.id] = value;
             await this.persist(item, scope);
             const result = { sheet: item.sheet.name, resource: definition.name, before, after: value.current, max: value.max };
@@ -629,11 +765,12 @@ export class SystemService {
         });
     }
 
-    deleteSheet(reference) {
+    deleteSheet(reference, { runId } = {}) {
         return this.run(async () => {
             const scope = this.scope();
             const item = await this.resolve(reference, scope);
             if (item.location === 'player') throw new Error('The player sheet cannot be deleted.');
+            await this.captureSheet(runId, item, scope);
             if (item.location === 'chat') {
                 const sheets = { ...this.chatSheets(scope) };
                 delete sheets[item.sheet.id];
@@ -659,18 +796,19 @@ export class SystemService {
         return this.run(async () => {
             const item = await this.resolve(reference);
             const view = this.view(item);
-            const wanted = String(check ?? '').trim();
+            const wanted = String(check ?? '').normalize('NFC').trim();
             if (!wanted) throw new Error('"check" is required (a skill or attribute name).');
-            const skill = view.skills.find(s => s.id === wanted || normalizeName(s.name) === normalizeName(wanted));
-            const attribute = skill ? null : view.attributes.find(a => a.id === wanted || normalizeName(a.name) === normalizeName(wanted));
+            const skill = findByName(view.skills, wanted);
+            const attribute = skill ? null : findByName(view.attributes, wanted);
             if (!skill && !attribute) {
                 const names = [...view.skills.map(s => s.name), ...view.attributes.map(a => a.name)].join(', ');
                 throw new Error(`Unknown check "${wanted}". Use a skill or attribute: ${names}.`);
             }
+            const rollMode = ['advantage', 'disadvantage'].includes(mode) ? mode : 'normal';
             const situational = toInt(bonus ?? 0, 'bonus', BONUS_RANGE);
             const mod = skill ? skill.total : attribute.modifier;
-            const rolls = mode === 'advantage' || mode === 'disadvantage' ? [this.d20(), this.d20()] : [this.d20()];
-            const kept = mode === 'advantage' ? Math.max(...rolls) : mode === 'disadvantage' ? Math.min(...rolls) : rolls[0];
+            const rolls = rollMode === 'normal' ? [this.d20()] : [this.d20(), this.d20()];
+            const kept = rollMode === 'advantage' ? Math.max(...rolls) : rollMode === 'disadvantage' ? Math.min(...rolls) : rolls[0];
             const total = kept + mod + situational;
             const target = dc === undefined || dc === null ? null : toInt(dc, 'dc', { min: 0, max: 100 });
 
@@ -678,7 +816,7 @@ export class SystemService {
                 sheet: item.sheet.name,
                 check: skill ? skill.name : attribute.name,
                 type: skill ? 'skill' : 'attribute',
-                mode,
+                mode: rollMode,
                 rolls,
                 d20: kept,
                 modifier: formatModifier(mod),

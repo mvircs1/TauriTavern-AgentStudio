@@ -11,6 +11,7 @@ import { createStorage } from './src/storage.js';
 import { StudioFS } from './src/studio-fs.js';
 import { SystemService } from './src/system.js';
 import { syncSkill } from './src/skill.js';
+import { RollbackManager, RunJournal } from './src/journal.js';
 import { AgentToolBridge, buildToolDefinitions } from './src/tools.js';
 import { LOG_PREFIX } from './src/util.js';
 
@@ -70,6 +71,19 @@ async function init() {
     const system = new SystemService(storage, lore);
     await system.run(() => undefined);
 
+    // Diário por run: permite desfazer o que o Agent fez numa resposta regenerada/descartada.
+    const journal = new RunJournal(storage, {
+        getChatId: () => {
+            const context = SillyTavern.getContext();
+            return typeof context.getCurrentChatId === 'function' ? context.getCurrentChatId() || null : null;
+        },
+    });
+    fs.journal = journal;
+    lore.journal = journal;
+    system.journal = journal;
+    const rollback = new RollbackManager({ journal, fs, lore, system, activity, getSettings });
+    rollback.install();
+
     const bridge = new AgentToolBridge({
         definitions: buildToolDefinitions({ fs, lore, system }),
         activity,
@@ -108,7 +122,7 @@ async function init() {
     drawer?.renderStatus();
 
     // Atalho para depuração pelo console: AgentStudio.fs.list(), AgentStudio.bridge.registeredIds() etc.
-    globalThis.AgentStudio = { fs, lore, activity, system, bridge, panel, storage };
+    globalThis.AgentStudio = { fs, lore, activity, system, bridge, panel, storage, journal, rollback };
     console.info(LOG_PREFIX, `Pronto. ${bridge.registeredIds().length} ferramenta(s) registrada(s); armazenamento: ${storage.kind}.`);
 }
 

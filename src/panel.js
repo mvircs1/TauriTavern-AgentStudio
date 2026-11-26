@@ -21,6 +21,7 @@ const REASON_LABELS = {
     update_entry: 'antes de o Agent editar uma entrada',
     delete_entry: 'antes de o Agent excluir uma entrada',
     before_restore: 'antes de uma restauração',
+    before_undo: 'antes de desfazer uma resposta descartada',
     manual: 'backup manual',
 };
 
@@ -33,6 +34,7 @@ const TOOL_LABELS = {
     system_info: 'Ver sistema', system_roll: 'Teste', sheet_list: 'Fichas', sheet_read: 'Ler ficha',
     sheet_create: 'Criar ficha', sheet_update: 'Editar ficha', sheet_resource: 'Recurso', sheet_delete: 'Excluir ficha',
     ui_roll: 'Teste (você)',
+    undo: 'Desfeito',
 };
 
 export class StudioPanel {

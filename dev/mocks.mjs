@@ -140,6 +140,17 @@ export function createAgentMock() {
         },
     };
 
+    // Acompanhamento de runs: subscribe(runId, handler) recebe eventos; finishRun simula o fim.
+    const subscribers = new Map();
+    api.subscribe = (runId, handler) => {
+        subscribers.set(runId, handler);
+        return () => subscribers.delete(runId);
+    };
+    async function finishRun(runId, type) {
+        subscribers.get(runId)?.({ seq: 99, id: 'e', runId, timestamp: new Date().toISOString(), level: 'info', type, payload: {} });
+        await new Promise(resolve => setTimeout(resolve, 10));
+    }
+
     /** Simula o runtime do Agent chamando uma ferramenta. */
     async function call(name, args, context = {}) {
         const entry = [...tools.values()].find(tool => tool.definition.name === name);
@@ -148,7 +159,7 @@ export function createAgentMock() {
         return entry.execute(args, { runId: 'run-1', invocationId: 'inv-1', callId: 'call-1', target: { kind: 'chat' }, signal: new AbortController().signal, attachImage() {}, ...context });
     }
 
-    return { api, tools, profiles, call };
+    return { api, tools, profiles, call, subscribers, finishRun };
 }
 
 export function createSillyTavernMock() {
@@ -157,8 +168,25 @@ export function createSillyTavernMock() {
     const extensionSettings = {};
     const chats = new Map([['chat-1', { world_info: 'Chat Book' }]]);
     const state = { chatId: 'chat-1' };
+    // eventSource como o do ST: emit espera cada listener, em ordem.
+    const listeners = new Map();
+    const eventSource = {
+        on(type, listener) {
+            if (!listeners.has(type)) listeners.set(type, []);
+            listeners.get(type).push(listener);
+        },
+        async emit(type, ...args) {
+            for (const listener of listeners.get(type) ?? []) await listener(...args);
+        },
+    };
     const context = {
         name1: 'Aria',
+        chat: [],
+        eventSource,
+        eventTypes: { GENERATION_STARTED: 'generation_started', CHAT_CHANGED: 'chat_id_changed' },
+        async deleteWorldInfo(name) {
+            books.delete(name);
+        },
         getCurrentChatId: () => state.chatId,
         get chatMetadata() {
             return state.chatId ? chats.get(state.chatId) : undefined;

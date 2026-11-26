@@ -4,7 +4,7 @@
 // Os schemas usam só type/description/properties/required/items/enum (de strings), para funcionar
 // com qualquer provedor (alguns, como o Gemini, recusam "default", "minimum", tipos em array etc.).
 
-import { EXTENSION_ID, errorMessage, LOG_PREFIX } from './util.js';
+import { deepNormalizeStrings, EXTENSION_ID, errorMessage, foldText, LOG_PREFIX } from './util.js';
 
 export const STUDIO_PROFILE_ID = 'agent-studio-writer';
 const BASE_PROFILE_ID = 'default-writer';
@@ -99,7 +99,192 @@ const ENTRY_FIELDS_SCHEMA = {
     },
 };
 
-const STUDIO_INTRO = 'The Agent Studio is the user\'s persistent, GLOBAL file space: it is shared across all chats and characters and survives between runs (unlike the per-run workspace). Use it to keep long-lived material organized in folders: world bibles, character sheets, lore drafts, plans, timelines, notes. Paths are relative and use "/", e.g. "worlds/Aetheria/geography.md". Folders are created automatically when a file is written.';
+// ---------- preparação dos argumentos (tolerância a modelos "criativos") ----------
+
+const PATH_ALIASES = ['file_path', 'filepath', 'file', 'filename', 'file_name', 'folder', 'directory', 'dir'];
+const QUERY_ALIASES = ['q', 'text', 'search', 'term', 'keyword', 'keywords'];
+const SHEET_ALIASES = ['character', 'sheet_name', 'sheet_id', 'who', 'char'];
+
+/** Nomes alternativos de parâmetros, por ferramenta: canônico -> alternativas. */
+const ARG_ALIASES = {
+    studio_list: { path: PATH_ALIASES },
+    studio_read: { path: PATH_ALIASES, start_line: ['startLine', 'line', 'from_line', 'offset'], line_count: ['lineCount', 'lines', 'count', 'num_lines'], max_chars: ['maxChars'] },
+    studio_write: { path: [...PATH_ALIASES, 'name'], content: ['text', 'body', 'data', 'contents'], mode: ['write_mode'] },
+    studio_edit: {
+        path: PATH_ALIASES,
+        old_string: ['old_text', 'oldString', 'old', 'find', 'search', 'target'],
+        new_string: ['new_text', 'newString', 'new', 'replace', 'replacement', 'with'],
+        replace_all: ['replaceAll', 'all', 'global'],
+    },
+    studio_search: { query: QUERY_ALIASES, path: PATH_ALIASES, case_sensitive: ['caseSensitive'] },
+    studio_make_folder: { path: [...PATH_ALIASES, 'name'] },
+    studio_move: { from: ['source', 'src', 'old_path', 'from_path', 'path'], to: ['destination', 'dest', 'target', 'new_path', 'to_path', 'new_name'] },
+    studio_delete: { path: PATH_ALIASES },
+    lorebook_list: { include_counts: ['includeCounts', 'counts'] },
+    lorebook_read: { book: ['lorebook', 'world', 'world_info', 'worldinfo', 'book_name', 'lorebook_name', 'name'], uids: ['ids', 'uid', 'entry_ids', 'entries'] },
+    lorebook_search: { query: QUERY_ALIASES, books: ['lorebooks', 'book', 'lorebook'] },
+    lorebook_create_entry: { book: ['lorebook', 'world', 'world_info', 'book_name', 'lorebook_name'], entry: ['fields', 'data', 'entry_data', 'new_entry'] },
+    lorebook_update_entry: {
+        book: ['lorebook', 'world', 'world_info', 'book_name', 'lorebook_name'],
+        uid: ['id', 'entry', 'entry_id', 'entry_uid'],
+        changes: ['fields', 'updates', 'update', 'data', 'set'],
+        content_edit: ['contentEdit', 'edit', 'patch'],
+    },
+    lorebook_delete_entry: { book: ['lorebook', 'world', 'world_info', 'book_name', 'lorebook_name'], uid: ['id', 'entry', 'entry_id', 'entry_uid'] },
+    lorebook_create_book: { name: ['book', 'lorebook', 'title', 'book_name'] },
+    system_info: {},
+    sheet_list: {},
+    sheet_read: { sheet: [...SHEET_ALIASES, 'name'] },
+    sheet_create: { name: ['character', 'sheet', 'sheet_name', 'title'], link_lorebook: ['linkLorebook', 'lorebook_entry', 'link'] },
+    sheet_update: { sheet: SHEET_ALIASES, link_lorebook: ['linkLorebook', 'lorebook_entry', 'link'], unlink_lorebook: ['unlinkLorebook', 'unlink'] },
+    sheet_resource: { sheet: [...SHEET_ALIASES, 'name', 'target'], resource: ['stat', 'resource_name', 'pool', 'type'], delta: ['amount', 'change', 'diff', 'value'], set: ['value_set', 'new_value', 'to'] },
+    sheet_delete: { sheet: [...SHEET_ALIASES, 'name'] },
+    system_roll: {
+        sheet: [...SHEET_ALIASES, 'name'],
+        check: ['skill', 'attribute', 'stat', 'ability', 'pericia', 'atributo', 'test', 'roll'],
+        dc: ['difficulty', 'cd', 'target', 'dificuldade', 'difficulty_class'],
+        mode: ['roll_mode'],
+        bonus: ['modifier', 'situational_bonus', 'extra'],
+    },
+};
+
+/** Campos de entrada de lorebook que o modelo às vezes manda soltos, fora de "entry"/"changes". */
+const ENTRY_FIELD_NAMES = new Set([
+    ...Object.keys(ENTRY_FIELDS_SCHEMA.properties),
+    'keys', 'keywords', 'title', 'secondary_keys', 'enabled',
+]);
+
+/** Ajustes específicos depois dos aliases. */
+const ARG_FIXES = {
+    studio_write: input => {
+        const mode = foldText(input.mode ?? '');
+        if (['add', 'acrescentar', 'anexar', 'adicionar', 'append_to_end', 'a'].includes(mode)) input.mode = 'append';
+        else if (mode && mode !== 'append') input.mode = 'replace';
+    },
+    lorebook_create_entry: input => {
+        // Campos da entrada mandados soltos no nível de cima.
+        if (input.entry === undefined) {
+            const entry = {};
+            for (const [key, value] of Object.entries(input)) {
+                if (ENTRY_FIELD_NAMES.has(key)) entry[key] = value;
+            }
+            if (Object.keys(entry).length) input.entry = entry;
+        }
+    },
+    lorebook_update_entry: input => {
+        if (input.changes === undefined) {
+            const changes = {};
+            for (const [key, value] of Object.entries(input)) {
+                if (ENTRY_FIELD_NAMES.has(key)) changes[key] = value;
+            }
+            if (Object.keys(changes).length) input.changes = changes;
+        }
+        if (input.content_edit === undefined && (input.old_string !== undefined || input.old_text !== undefined)) {
+            input.content_edit = { old_string: input.old_string ?? input.old_text, new_string: input.new_string ?? input.new_text ?? '' };
+        }
+    },
+    sheet_resource: input => {
+        // "damage": 4 / "heal": 3 / "spend": 2 viram delta com o sinal certo.
+        if (input.delta === undefined && input.set === undefined) {
+            const lose = input.damage ?? input.dano ?? input.spend ?? input.cost ?? input.gasto;
+            const gain = input.heal ?? input.healing ?? input.cura ?? input.recover ?? input.restore;
+            if (lose !== undefined) input.delta = -Math.abs(Number(lose));
+            else if (gain !== undefined) input.delta = Math.abs(Number(gain));
+        }
+    },
+    system_roll: input => {
+        const mode = foldText(input.mode ?? '');
+        if (input.advantage === true || ['vantagem', 'adv', 'with_advantage'].includes(mode)) input.mode = 'advantage';
+        else if (input.disadvantage === true || ['desvantagem', 'dis', 'disadv', 'with_disadvantage'].includes(mode)) input.mode = 'disadvantage';
+        else if (mode && mode !== 'advantage' && mode !== 'disadvantage') input.mode = 'normal';
+    },
+};
+
+/** Converte um valor para o tipo do schema quando o modelo manda "5", "true", "[...]" etc. */
+export function coerceValue(schema, value) {
+    if (value === undefined || value === null || !schema) return value;
+    switch (schema.type) {
+        case 'boolean': {
+            if (typeof value === 'boolean') return value;
+            if (typeof value === 'number') return value !== 0;
+            const text = foldText(value);
+            if (['true', 'yes', 'sim', '1', 'on'].includes(text)) return true;
+            if (['false', 'no', 'nao', '0', 'off', ''].includes(text)) return false;
+            return value;
+        }
+        case 'integer':
+        case 'number': {
+            if (typeof value === 'number') return schema.type === 'integer' ? Math.trunc(value) : value;
+            if (typeof value === 'string') {
+                const text = value.trim().replace(/^\+/, '');
+                if (text !== '' && Number.isFinite(Number(text))) return schema.type === 'integer' ? Math.trunc(Number(text)) : Number(text);
+            }
+            return value;
+        }
+        case 'string': {
+            if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+            if (schema.enum && typeof value === 'string') {
+                const match = schema.enum.find(option => foldText(option) === foldText(value));
+                return match ?? value;
+            }
+            return value;
+        }
+        case 'array': {
+            let list = value;
+            if (typeof list === 'string') {
+                const text = list.trim();
+                if (text.startsWith('[')) {
+                    try { list = JSON.parse(text); } catch { /* fica como texto */ }
+                } else if (schema.items?.type === 'string' || schema.items?.type === 'integer') {
+                    list = text.split(',').map(item => item.trim()).filter(Boolean);
+                }
+            }
+            // Mapas {"Força": 14} são aceitos pelos serviços; não embrulha em lista.
+            if (list && typeof list === 'object' && !Array.isArray(list) && schema.items?.type === 'object' && !('name' in list)) return list;
+            if (!Array.isArray(list)) list = [list];
+            return list.map(item => coerceValue(schema.items, item));
+        }
+        case 'object': {
+            let object = value;
+            if (typeof object === 'string') {
+                try { object = JSON.parse(object); } catch { return value; }
+            }
+            if (!object || typeof object !== 'object' || Array.isArray(object)) return object;
+            const result = { ...object };
+            for (const [key, child] of Object.entries(schema.properties ?? {})) {
+                if (key in result) result[key] = coerceValue(child, result[key]);
+            }
+            return result;
+        }
+        default:
+            return value;
+    }
+}
+
+/** Normaliza os argumentos de uma chamada: JSON em texto, Unicode (NFC), nomes alternativos e tipos. */
+export function prepareArgs(definition, args) {
+    let input = args;
+    if (typeof input === 'string') {
+        try { input = JSON.parse(input); } catch { input = {}; }
+    }
+    if (!input || typeof input !== 'object' || Array.isArray(input)) input = {};
+    input = deepNormalizeStrings(input);
+    for (const [canonical, alternatives] of Object.entries(ARG_ALIASES[definition.name] ?? {})) {
+        if (input[canonical] !== undefined) continue;
+        const found = alternatives.find(alternative => input[alternative] !== undefined);
+        if (found) {
+            input[canonical] = input[found];
+            delete input[found];
+        }
+    }
+    ARG_FIXES[definition.name]?.(input);
+    for (const [key, schema] of Object.entries(definition.inputSchema.properties ?? {})) {
+        if (input[key] !== undefined) input[key] = coerceValue(schema, input[key]);
+    }
+    return input;
+}
+
+const STUDIO_INTRO ='The Agent Studio is the user\'s persistent, GLOBAL file space: it is shared across all chats and characters and survives between runs (unlike the per-run workspace). Use it to keep long-lived material organized in folders: world bibles, character sheets, lore drafts, plans, timelines, notes. Paths are relative and use "/", e.g. "worlds/Aetheria/geography.md". Folders are created automatically when a file is written.';
 
 /**
  * @param {{ fs: import('./studio-fs.js').StudioFS, lore: import('./lorebook.js').LorebookService }} services
@@ -152,7 +337,7 @@ export function buildToolDefinitions({ fs, lore, system }) {
                 },
                 required: ['path', 'content'],
             },
-            run: args => fs.write({ path: args.path, content: args.content, mode: args.mode ?? 'replace' }),
+            run: (args, context) => fs.write({ path: args.path, content: args.content, mode: args.mode ?? 'replace', runId: context.runId }),
             summarize: (args, result) => `${result.created ? 'Criou' : (args.mode === 'append' ? 'Acrescentou em' : 'Reescreveu')} ${result.path} (${result.size} caracteres)`,
         },
         {
@@ -169,7 +354,7 @@ export function buildToolDefinitions({ fs, lore, system }) {
                 },
                 required: ['path', 'old_string', 'new_string'],
             },
-            run: args => fs.edit({ path: args.path, oldString: args.old_string, newString: args.new_string, replaceAll: args.replace_all === true }),
+            run: (args, context) => fs.edit({ path: args.path, oldString: args.old_string, newString: args.new_string, replaceAll: args.replace_all === true, runId: context.runId }),
             summarize: (args, result) => `Editou ${result.path} (${result.replacements} troca${result.replacements === 1 ? '' : 's'})`,
         },
         {
@@ -198,7 +383,7 @@ export function buildToolDefinitions({ fs, lore, system }) {
                 properties: { path: { type: 'string', description: 'Folder path, e.g. "worlds/Aetheria".' } },
                 required: ['path'],
             },
-            run: args => fs.makeFolder({ path: args.path }),
+            run: (args, context) => fs.makeFolder({ path: args.path, runId: context.runId }),
             summarize: (args, result) => `${result.created ? 'Criou a pasta' : 'Pasta já existia:'} ${result.path}`,
         },
         {
@@ -213,7 +398,7 @@ export function buildToolDefinitions({ fs, lore, system }) {
                 },
                 required: ['from', 'to'],
             },
-            run: args => fs.move({ from: args.from, to: args.to }),
+            run: (args, context) => fs.move({ from: args.from, to: args.to ?? '', runId: context.runId }),
             summarize: (args, result) => (result.moved ? `Moveu ${result.from} → ${result.to}` : `Nada a mover (${result.from})`),
         },
         {
@@ -225,7 +410,7 @@ export function buildToolDefinitions({ fs, lore, system }) {
                 properties: { path: { type: 'string', description: 'File or folder path.' } },
                 required: ['path'],
             },
-            run: args => fs.delete({ path: args.path }),
+            run: (args, context) => fs.delete({ path: args.path, runId: context.runId }),
             summarize: (args, result) => `Excluiu ${result.deleted} (${result.files} arquivo${result.files === 1 ? '' : 's'} na lixeira)`,
         },
 
@@ -344,7 +529,7 @@ export function buildToolDefinitions({ fs, lore, system }) {
                 properties: { name: { type: 'string', description: 'Name of the new lorebook.' } },
                 required: ['name'],
             },
-            run: args => lore.createBook({ name: args.name }),
+            run: (args, context) => lore.createBook({ name: args.name, runId: context.runId }),
             summarize: (args, result) => `Criou o lorebook "${result.book}"`,
         },
 
@@ -399,13 +584,14 @@ export function buildToolDefinitions({ fs, lore, system }) {
                 },
                 required: ['name'],
             },
-            run: args => system.createSheet({
+            run: (args, context) => system.createSheet({
                 name: args.name,
                 notes: args.notes,
                 attributes: args.attributes,
                 skills: args.skills,
                 resources: args.resources,
                 linkLorebook: args.link_lorebook,
+                runId: context.runId,
             }),
             summarize: (args, result) => `Criou a ficha de ${result.name}${result.location === 'lorebook' ? ' (vinculada a lorebook)' : ''}`,
         },
@@ -426,7 +612,7 @@ export function buildToolDefinitions({ fs, lore, system }) {
                     unlink_lorebook: { type: 'boolean', description: 'Move a lorebook-linked sheet back into this chat only.' },
                 },
             },
-            run: args => system.updateSheet(args.sheet, {
+            run: (args, context) => system.updateSheet(args.sheet, {
                 name: args.name,
                 notes: args.notes,
                 attributes: args.attributes,
@@ -434,6 +620,7 @@ export function buildToolDefinitions({ fs, lore, system }) {
                 resources: args.resources,
                 linkLorebook: args.link_lorebook,
                 unlinkLorebook: args.unlink_lorebook === true,
+                runId: context.runId,
             }),
             summarize: (args, result) => `Editou a ficha de ${result.name}`,
         },
@@ -451,7 +638,7 @@ export function buildToolDefinitions({ fs, lore, system }) {
                 },
                 required: ['resource'],
             },
-            run: args => system.adjustResource(args.sheet, { resource: args.resource, delta: args.delta, set: args.set }),
+            run: (args, context) => system.adjustResource(args.sheet, { resource: args.resource, delta: args.delta, set: args.set, runId: context.runId }),
             summarize: (args, result) => `${result.resource} de ${result.sheet}: ${result.before} → ${result.after}/${result.max}`,
         },
         {
@@ -459,7 +646,7 @@ export function buildToolDefinitions({ fs, lore, system }) {
             group: TOOL_GROUPS.system,
             description: 'Delete an NPC sheet that is no longer needed (the player\'s sheet cannot be deleted).',
             inputSchema: { type: 'object', properties: { sheet: { type: 'string', description: 'Sheet name or id.' } }, required: ['sheet'] },
-            run: args => system.deleteSheet(args.sheet),
+            run: (args, context) => system.deleteSheet(args.sheet, { runId: context.runId }),
             summarize: (args, result) => `Excluiu a ficha de ${result.deleted}`,
         },
         {
@@ -569,17 +756,21 @@ export class AgentToolBridge {
     }
 
     async execute(definition, args, context) {
-        const input = args && typeof args === 'object' ? args : {};
         const callContext = context ?? {};
+        let input = {};
         try {
+            input = prepareArgs(definition, args);
             const result = await definition.run(input, callContext);
             let summary = null;
             try { summary = definition.summarize?.(input, result) ?? null; } catch { /* resumo é opcional */ }
             this.activity.add({ tool: definition.name, ok: true, summary, runId: callContext.runId });
             return result;
         } catch (error) {
-            this.activity.add({ tool: definition.name, ok: false, error: errorMessage(error), runId: callContext.runId });
-            throw error;
+            const message = errorMessage(error);
+            this.activity.add({ tool: definition.name, ok: false, error: message, runId: callContext.runId });
+            // Mostra ao modelo quais argumentos chegaram, para ele conseguir se corrigir.
+            const received = Object.keys(input).join(', ') || 'none';
+            throw new Error(`${message} (arguments received: ${received})`);
         }
     }
 

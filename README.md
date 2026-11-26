@@ -127,11 +127,12 @@ Os lorebooks continuam sendo os arquivos normais do SillyTavern. O plugin só us
 - O Agent "vê" os lorebooks ativados no começo da run. Entradas que ele cria ou edita passam a valer nas próximas mensagens.
 - O estúdio e as fichas não entram no prompt sozinhos: o Agent consulta pelas ferramentas quando precisa.
 - Ainda não há histórico de versões dos arquivos do estúdio. Só existe a lixeira.
+- Ao regenerar uma resposta ou gerar nova swipe, o que o Agent mudou naquela resposta (arquivos, lorebooks, fichas) é desfeito automaticamente. Runs com erro ou canceladas também. Dá para desligar nas configurações.
 - A IA não edita as regras do sistema (atributos, perícias, recursos). Isso fica com você, na aba Sistema.
 
 ## Desenvolvimento
 
-- `node --test dev/core.test.mjs dev/system.test.mjs dev/skill.test.mjs` roda os testes da lógica: estúdio, lorebooks, backups, registro das ferramentas, sistema de RPG e Skill. Eles usam simulações do SillyTavern e da API do TauriTavern 2.4.0.
+- `node --test dev/core.test.mjs dev/system.test.mjs dev/skill.test.mjs dev/robust-undo.test.mjs` roda os testes da lógica: estúdio, lorebooks, backups, registro das ferramentas, sistema de RPG e Skill. Eles usam simulações do SillyTavern e da API do TauriTavern 2.4.0.
 - Ao mudar ferramentas, atualize o `skill/agent-studio/SKILL.md` e a `version` dele. O teste da Skill falha se alguma ferramenta não estiver citada lá.
 - `dev/harness.html` é uma página de teste da interface fora do app. Para usar, sirva a pasta do projeto (por exemplo `python -m http.server`) e abra `/dev/harness.html`.
 - `docs/` guarda as anotações da pesquisa sobre o TauriTavern e o modo Agent.

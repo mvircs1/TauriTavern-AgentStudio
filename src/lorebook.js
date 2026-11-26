@@ -3,7 +3,7 @@
 // getWorldInfoNames, updateWorldInfoList, reloadWorldInfoEditor). Extras opcionais vêm de
 // world-info.js por import dinâmico; se o import falhar, há alternativas locais.
 
-import { clampInt, countOccurrences, createSerialQueue, generateId, LOG_PREFIX, truncate } from './util.js';
+import { clampInt, createSerialQueue, foldedIndexOf, foldText, generateId, locateFlexible, LOG_PREFIX, truncate } from './util.js';
 
 const BACKUP_INDEX_TABLE = 'meta';
 const BACKUP_INDEX_KEY = 'backups';
@@ -87,6 +87,7 @@ const FIELD_ALIASES = {
     name: 'comment',
     memo: 'comment',
     enabled: '!disable',
+    disabled: 'disable',
     selective_logic: 'selectiveLogic',
     scan_depth: 'scanDepth',
     case_sensitive: 'caseSensitive',
@@ -110,23 +111,73 @@ function parseKeys(value, field) {
 
 function parseBoolean(value, field) {
     if (typeof value === 'boolean') return value;
-    if (value === 'true' || value === 1) return true;
-    if (value === 'false' || value === 0) return false;
+    if (typeof value === 'number') return value !== 0;
+    const text = foldText(value);
+    if (['true', 'yes', 'sim', 'on', '1'].includes(text)) return true;
+    if (['false', 'no', 'nao', 'off', '0'].includes(text)) return false;
     throw new Error(`"${field}" must be true or false.`);
 }
 
+// Campos numéricos que também aceitam nomes (ex.: "position": "at_depth", "role": "assistant").
+const ENUM_NAMES = {
+    position: {
+        before_char_defs: 0, before_char: 0, before: 0, after_char_defs: 1, after_char: 1, after: 1,
+        authors_note_top: 2, an_top: 2, authors_note_bottom: 3, an_bottom: 3, at_depth: 4, depth: 4, in_chat: 4,
+        examples_top: 5, em_top: 5, examples_bottom: 6, em_bottom: 6, outlet: 7,
+    },
+    role: { system: 0, user: 1, assistant: 2 },
+    selectiveLogic: { and_any: 0, not_all: 1, not_any: 2, and_all: 3 },
+};
+
+// Campos que aparecem na saída do lorebook_read e o modelo às vezes devolve; são ignorados sem aviso.
+const READ_ONLY_FIELDS = new Set(['uid', 'position_name', 'content_truncated', 'displayIndex', 'preview', 'content_chars', 'sheet', 'world', 'book', 'id']);
+
+function parseEntryValue(spec, field, rawField, value) {
+    if (spec.type === 'int' && typeof value === 'string' && ENUM_NAMES[field]) {
+        const named = ENUM_NAMES[field][foldText(value).replace(/[\s-]+/g, '_')];
+        if (named !== undefined) return named;
+    }
+    switch (spec.type) {
+        case 'string':
+            return String(value).normalize('NFC');
+        case 'keys':
+            return parseKeys(value, rawField).map(key => key.normalize('NFC'));
+        case 'boolean':
+            return parseBoolean(value, rawField);
+        case 'int': {
+            const number = Number(typeof value === 'string' ? value.trim().replace(/^\+/, '') : value);
+            if (!Number.isFinite(number)) throw new Error(`"${rawField}" must be a number.`);
+            const int = Math.trunc(number);
+            if (int < spec.min || int > spec.max) {
+                throw new Error(`"${rawField}" must be between ${spec.min} and ${spec.max}.`);
+            }
+            return int;
+        }
+        default:
+            return value;
+    }
+}
+
 /**
- * Valida e normaliza os campos de uma entrada vindos do modelo.
+ * Valida e normaliza os campos de uma entrada vindos do modelo. Campos desconhecidos não dão erro:
+ * são devolvidos em `ignored` para a ferramenta avisar o modelo.
  * @param {unknown} input
- * @returns {Record<string, any>}
+ * @returns {{ fields: Record<string, any>, ignored: string[] }}
  */
-export function sanitizeEntryFields(input) {
-    if (input === undefined || input === null) return {};
+export function parseEntryFields(input) {
+    if (input === undefined || input === null) return { fields: {}, ignored: [] };
+    if (typeof input === 'string') {
+        try {
+            input = JSON.parse(input);
+        } catch {
+            throw new Error('Entry fields must be an object, e.g. {"comment": "...", "key": ["..."], "content": "..."}.');
+        }
+    }
     if (typeof input !== 'object' || Array.isArray(input)) {
-        throw new Error('Entry fields must be an object.');
+        throw new Error('Entry fields must be an object, e.g. {"comment": "...", "key": ["..."], "content": "..."}.');
     }
     const result = {};
-    const unknown = [];
+    const ignored = [];
     for (const [rawField, rawValue] of Object.entries(input)) {
         let field = rawField;
         let value = rawValue;
@@ -139,7 +190,7 @@ export function sanitizeEntryFields(input) {
         }
         const spec = FIELD_SPECS[field];
         if (!spec) {
-            if (field !== 'uid') unknown.push(rawField);
+            if (!READ_ONLY_FIELDS.has(field)) ignored.push(rawField);
             continue;
         }
         if (value === null || value === undefined) {
@@ -149,34 +200,14 @@ export function sanitizeEntryFields(input) {
             }
             throw new Error(`"${rawField}" cannot be null.`);
         }
-        switch (spec.type) {
-            case 'string':
-                result[field] = String(value);
-                break;
-            case 'keys':
-                result[field] = parseKeys(value, rawField);
-                break;
-            case 'boolean':
-                result[field] = parseBoolean(value, rawField);
-                break;
-            case 'int': {
-                const number = Number(value);
-                if (!Number.isFinite(number)) throw new Error(`"${rawField}" must be a number.`);
-                const int = Math.trunc(number);
-                if (int < spec.min || int > spec.max) {
-                    throw new Error(`"${rawField}" must be between ${spec.min} and ${spec.max}.`);
-                }
-                result[field] = int;
-                break;
-            }
-            default:
-                break;
-        }
+        result[field] = parseEntryValue(spec, field, rawField, value);
     }
-    if (unknown.length) {
-        throw new Error(`Unknown entry field(s): ${unknown.join(', ')}. Allowed: ${Object.keys(FIELD_SPECS).join(', ')}.`);
-    }
-    return result;
+    return { fields: result, ignored };
+}
+
+/** Atalho que devolve só os campos válidos. */
+export function sanitizeEntryFields(input) {
+    return parseEntryFields(input).fields;
 }
 
 function sortEntries(entries) {
@@ -239,6 +270,8 @@ export class LorebookService {
         this.listeners = new Set();
         /** Preenchido pelo sistema de fichas: (book) => Map<uid, nome da ficha vinculada>. */
         this.sheetLinksForBook = null;
+        /** @type {import('./journal.js').RunJournal|null} */
+        this.journal = null;
     }
 
     // ---------- infraestrutura ----------
@@ -281,16 +314,19 @@ export class LorebookService {
     }
 
     async requireBook(name) {
-        const book = typeof name === 'string' ? name.trim() : '';
+        const book = typeof name === 'string' ? name.normalize('NFC').trim() : String(name ?? '').trim();
         if (!book) throw new Error('"book" (lorebook name) is required.');
         let names = await this.bookNames();
         if (!names.includes(book)) names = await this.bookNames({ refresh: true });
         if (names.includes(book)) return book;
 
-        const lower = book.toLowerCase();
-        const exactCaseless = names.find(candidate => candidate.toLowerCase() === lower);
-        if (exactCaseless) return exactCaseless;
-        const similar = names.filter(candidate => candidate.toLowerCase().includes(lower)).slice(0, 5);
+        // Sem diferenciar acentos, maiúsculas, forma Unicode ou extensão ".json".
+        const wanted = foldText(book.replace(/\.json$/i, ''));
+        const sameName = names.filter(candidate => foldText(candidate) === wanted);
+        if (sameName.length === 1) return sameName[0];
+        const containing = names.filter(candidate => foldText(candidate).includes(wanted) || wanted.includes(foldText(candidate)));
+        if (containing.length === 1) return containing[0];
+        const similar = containing.slice(0, 5);
         throw new Error(similar.length
             ? `Lorebook not found: "${book}". Did you mean: ${similar.map(s => `"${s}"`).join(', ')}?`
             : `Lorebook not found: "${book}". Use lorebook_list to see the available lorebooks.`);
@@ -459,9 +495,10 @@ export class LorebookService {
 
     search({ query, books, limit = 20 } = {}) {
         return this.enqueue(async () => {
-            const raw = typeof query === 'string' ? query.trim() : '';
+            const raw = typeof query === 'string' ? query.normalize('NFC').trim() : String(query ?? '').trim();
             if (!raw) throw new Error('query is required.');
-            const needle = raw.toLowerCase();
+            // Busca sem diferenciar maiúsculas nem acentos ("acao" acha "ação").
+            const has = value => foldedIndexOf(value, raw) !== -1;
             const max = clampInt(limit, { min: 1, max: 100, fallback: 20 });
 
             let names;
@@ -480,11 +517,11 @@ export class LorebookService {
                 const data = await context.loadWorldInfo(name);
                 for (const entry of sortEntries(Object.values(data?.entries ?? {}))) {
                     const matchedIn = [];
-                    const content = String(entry.content ?? '');
-                    if (String(entry.comment ?? '').toLowerCase().includes(needle)) matchedIn.push('title');
-                    if ((entry.key ?? []).some(key => String(key).toLowerCase().includes(needle))) matchedIn.push('keys');
-                    if ((entry.keysecondary ?? []).some(key => String(key).toLowerCase().includes(needle))) matchedIn.push('secondary_keys');
-                    const contentIndex = content.toLowerCase().indexOf(needle);
+                    const content = String(entry.content ?? '').normalize('NFC');
+                    if (has(String(entry.comment ?? ''))) matchedIn.push('title');
+                    if ((entry.key ?? []).some(key => has(String(key)))) matchedIn.push('keys');
+                    if ((entry.keysecondary ?? []).some(key => has(String(key)))) matchedIn.push('secondary_keys');
+                    const contentIndex = foldedIndexOf(content, raw);
                     if (contentIndex !== -1) matchedIn.push('content');
                     if (!matchedIn.length) continue;
 
@@ -508,9 +545,9 @@ export class LorebookService {
     createEntry({ book, fields, runId } = {}) {
         return this.enqueue(async () => {
             const name = await this.requireBook(book);
-            const sanitized = sanitizeEntryFields(fields);
+            const { fields: sanitized, ignored } = parseEntryFields(fields);
             if (!sanitized.content && !sanitized.comment) {
-                throw new Error('Provide at least "content" (and usually "comment" and "key").');
+                throw new Error('Provide at least "content" (and usually "comment" and "key"), e.g. {"book": "...", "entry": {"comment": "Title", "key": ["word"], "content": "Text"}}.');
             }
             const data = await this.loadBook(name);
             await this.backupBeforeChange(name, data, 'create_entry', runId);
@@ -525,6 +562,7 @@ export class LorebookService {
             if (!entry.constant && (!entry.key || entry.key.length === 0)) {
                 warnings.push('This entry has no keys and is not constant, so it will never activate. Add "key" or set "constant": true.');
             }
+            if (ignored.length) warnings.push(`Ignored unknown field(s): ${ignored.join(', ')}.`);
             return { book: name, uid, title: entryTitle(entry), created: true, warnings };
         });
     }
@@ -537,25 +575,30 @@ export class LorebookService {
             const entry = data.entries[key];
             if (!entry) throw new Error(`Entry uid ${uid} not found in "${name}". Use lorebook_read to see the uids.`);
 
-            const sanitized = sanitizeEntryFields(changes);
+            const { fields: sanitized, ignored } = parseEntryFields(changes);
             if (contentEdit && typeof contentEdit === 'object') {
-                const oldString = contentEdit.old_string ?? contentEdit.oldString;
-                const newString = contentEdit.new_string ?? contentEdit.newString;
+                const oldString = contentEdit.old_string ?? contentEdit.oldString ?? contentEdit.old ?? contentEdit.find;
+                const newString = contentEdit.new_string ?? contentEdit.newString ?? contentEdit.new ?? contentEdit.replace ?? '';
                 if (typeof oldString !== 'string' || !oldString) throw new Error('content_edit.old_string must be a non-empty string.');
-                if (typeof newString !== 'string') throw new Error('content_edit.new_string must be a string.');
                 const base = sanitized.content ?? String(entry.content ?? '');
-                const occurrences = countOccurrences(base, oldString);
-                if (occurrences === 0) throw new Error('content_edit.old_string was not found in the entry content. Read the entry again and copy the exact text.');
-                if (occurrences > 1) throw new Error(`content_edit.old_string matches ${occurrences} places; include more surrounding text to make it unique.`);
-                sanitized.content = base.replace(oldString, () => newString);
+                const { text, needle, count } = locateFlexible(base, oldString);
+                if (count === 0) throw new Error('content_edit.old_string was not found in the entry content. Read the entry again (lorebook_read with uids) and copy the exact text.');
+                if (count > 1) throw new Error(`content_edit.old_string matches ${count} places; include more surrounding text to make it unique.`);
+                sanitized.content = text.replace(needle, () => String(newString).normalize('NFC'));
             }
-            if (Object.keys(sanitized).length === 0) throw new Error('Nothing to change: pass "changes" and/or "content_edit".');
+            if (Object.keys(sanitized).length === 0) {
+                throw new Error(ignored.length
+                    ? `Nothing to change: unknown field(s) ${ignored.join(', ')}. Valid fields include comment, content, key, keysecondary, constant, disable, position, depth, order.`
+                    : 'Nothing to change: pass "changes" (e.g. {"content": "..."}) and/or "content_edit".');
+            }
 
             await this.backupBeforeChange(name, data, 'update_entry', runId);
             Object.assign(entry, sanitized);
             await this.syncOriginalData(data, Number(key), sanitized);
             await this.saveBook(name, data);
-            return { book: name, uid: Number(key), title: entryTitle(entry), updated_fields: Object.keys(sanitized) };
+            const result = { book: name, uid: Number(key), title: entryTitle(entry), updated_fields: Object.keys(sanitized) };
+            if (ignored.length) result.warnings = [`Ignored unknown field(s): ${ignored.join(', ')}.`];
+            return result;
         });
     }
 
@@ -576,19 +619,23 @@ export class LorebookService {
         });
     }
 
-    createBook({ name } = {}) {
+    createBook({ name, runId } = {}) {
         return this.enqueue(async () => {
-            let bookName = typeof name === 'string' ? name.trim() : '';
+            let bookName = typeof name === 'string' ? name.normalize('NFC').trim() : '';
             if (!bookName) throw new Error('"name" is required.');
             if (INVALID_BOOK_NAME.test(bookName)) throw new Error('Lorebook names cannot contain / \\ : * ? " < > | or control characters.');
             if (bookName.length > 100) throw new Error('Lorebook name is too long (max 100 characters).');
             bookName = await this.sanitizeBookName(bookName);
 
             const existing = await this.bookNames({ refresh: true });
-            if (existing.some(item => item.toLowerCase() === bookName.toLowerCase())) {
-                throw new Error(`A lorebook named "${bookName}" already exists.`);
+            const clash = existing.find(item => foldText(item) === foldText(bookName));
+            if (clash) {
+                throw new Error(`A lorebook named "${clash}" already exists. Use it instead of creating a new one.`);
             }
             const context = this.context();
+            if (runId && this.journal) {
+                await this.journal.capture(runId, `lore-created:${bookName}`, async () => ({ kind: 'lorebook_created', book: bookName }));
+            }
             await context.saveWorldInfo(bookName, { entries: {} }, true);
             const after = await this.bookNames({ refresh: true });
             this.emit({ type: 'book', book: bookName });
@@ -640,7 +687,54 @@ export class LorebookService {
         if (runKey && this.backedUpInRun.has(runKey)) return null;
         const item = await this.createBackupInternal(book, data, reason, runId);
         if (runKey) this.backedUpInRun.add(runKey);
+        if (runId && this.journal) {
+            await this.journal.capture(runId, `lore:${book}`, async () => ({ kind: 'lorebook', book, backupId: item.id }));
+        }
         return item;
+    }
+
+    /** Desfaz o que uma run fez nos lorebooks: volta cada livro ao backup de antes da run. */
+    undoEntries(entries) {
+        return this.enqueue(async () => {
+            let changed = 0;
+            const names = await this.bookNames({ refresh: true });
+            for (const entry of entries.filter(item => item.kind === 'lorebook')) {
+                const stored = await this.storage.get(BACKUP_TABLE, entry.backupId);
+                if (!stored?.data) {
+                    console.warn(LOG_PREFIX, `Backup ${entry.backupId} de "${entry.book}" não existe mais; não dá para desfazer.`);
+                    continue;
+                }
+                if (names.includes(entry.book)) {
+                    await this.createBackupInternal(entry.book, await this.loadBook(entry.book), 'before_undo');
+                }
+                await this.saveBook(entry.book, structuredClone(stored.data));
+                changed++;
+            }
+            for (const entry of entries.filter(item => item.kind === 'lorebook_created')) {
+                if (!names.includes(entry.book)) continue;
+                await this.createBackupInternal(entry.book, await this.loadBook(entry.book), 'before_undo');
+                await this.deleteBookInternal(entry.book);
+                changed++;
+            }
+            if (changed) await this.bookNames({ refresh: true });
+            return changed;
+        });
+    }
+
+    async deleteBookInternal(name) {
+        const wi = await this.wi();
+        if (typeof wi?.deleteWorldInfo === 'function') {
+            await wi.deleteWorldInfo(name);
+        } else {
+            const context = this.context();
+            await fetch('/api/worldinfo/delete', {
+                method: 'POST',
+                headers: typeof context.getRequestHeaders === 'function' ? context.getRequestHeaders() : { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name }),
+            });
+            if (typeof context.deleteWorldInfo === 'function') await context.deleteWorldInfo(name);
+        }
+        this.emit({ type: 'book', book: name });
     }
 
     async createBackupInternal(book, data, reason, runId = null) {

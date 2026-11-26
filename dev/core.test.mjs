@@ -224,7 +224,9 @@ describe('lorebooks (LorebookService)', () => {
         const full = await lore.read({ book: 'lyra lore', uids: [1, 9] });
         assert.equal(full.entries[0].content, 'Reino nas nuvens.');
         assert.deepEqual(full.missing_uids, [9]);
-        await assert.rejects(lore.read({ book: 'Lyra' }), /Did you mean: "Lyra Lore"/);
+        assert.equal((await lore.read({ book: 'Lyra' })).book, 'Lyra Lore', 'nome parcial inequívoco é aceito');
+        st.books.set('Lyra Extra', { entries: {} });
+        await assert.rejects(lore.read({ book: 'Lyra' }), /Did you mean: "Lyra Extra", "Lyra Lore"/);
     });
 
     test('busca por título, chave e conteúdo', async () => {
@@ -253,10 +255,11 @@ describe('lorebooks (LorebookService)', () => {
         assert.equal(noKeys.warnings.length, 1);
     });
 
-    test('valida campos', () => {
+    test('valida campos e ignora os desconhecidos', () => {
         assert.throws(() => sanitizeEntryFields({ position: 9 }), /between 0 and 7/);
-        assert.throws(() => sanitizeEntryFields({ inventado: 1 }), /Unknown entry field/);
+        assert.deepEqual(sanitizeEntryFields({ inventado: 1, position_name: 'x', uid: 3 }), {});
         assert.deepEqual(sanitizeEntryFields({ enabled: false, scanDepth: null }), { disable: true, scanDepth: null });
+        assert.deepEqual(sanitizeEntryFields({ position: 'at depth', role: 'Assistant', constant: 'sim', order: '+150' }), { position: 4, role: 2, constant: true, order: 150 });
     });
 
     test('edita sem mexer no objeto do cache antes de salvar', async () => {

@@ -11,6 +11,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
     loreReadTools: true,
     loreWriteTools: true,
     systemTools: true,
+    undoOnRegenerate: true,
     backupsPerBook: 20,
 });
 
@@ -72,6 +73,10 @@ export function renderSettingsDrawer({ bridge, panel, storageKind }) {
                 <label class="checkbox_label">
                     <input type="checkbox" data-setting="systemTools">
                     <span>Sistema: ler e editar fichas, Vida/Mana e testes de d20</span>
+                </label>
+                <label class="checkbox_label" title="Ao regenerar uma resposta ou gerar uma nova swipe, o que o Agent mudou naquela resposta (arquivos, lorebooks, fichas) volta ao estado anterior. Também desfaz runs que falham ou são canceladas.">
+                    <input type="checkbox" data-setting="undoOnRegenerate">
+                    <span>Desfazer as alterações do Agent ao regenerar / gerar nova swipe</span>
                 </label>
                 <div class="agst-settings-row">
                     <label for="agst_backups_per_book">Backups guardados por lorebook</label>

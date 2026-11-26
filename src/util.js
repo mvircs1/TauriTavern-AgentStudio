@@ -15,7 +15,7 @@ const MAX_PATH_LENGTH = 400;
  * @returns {string} '' representa a raiz (só se allowRoot)
  */
 export function normalizePath(input, { allowRoot = false } = {}) {
-    const raw = typeof input === 'string' ? input : '';
+    const raw = typeof input === 'string' ? input.normalize('NFC') : '';
     const segments = raw
         .replace(/\\/g, '/')
         .split('/')
@@ -114,6 +114,80 @@ export function countOccurrences(haystack, needle) {
         index = haystack.indexOf(needle, index + needle.length);
     }
     return count;
+}
+
+/**
+ * Forma canônica para comparar nomes: Unicode normalizado, sem acentos, minúsculas e espaços colapsados.
+ * "Força", "forca", "FORÇA" e "Força" (forma decomposta) viram todos "forca".
+ */
+export function foldText(value) {
+    return String(value ?? '')
+        .normalize('NFD')
+        .replace(/[̀-ͯ]/g, '')
+        .toLowerCase()
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+/**
+ * Como foldText, mas preservando o comprimento do texto (já em NFC), para que uma posição achada no
+ * texto "dobrado" sirva também no texto original (snippets de busca).
+ */
+export function foldKeepLength(text) {
+    let output = '';
+    for (const char of String(text ?? '')) {
+        const base = char.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+        if (base.length === char.length) {
+            output += base;
+        } else {
+            const lower = char.toLowerCase();
+            output += lower.length === char.length ? lower : char;
+        }
+    }
+    return output;
+}
+
+/** Busca sem diferenciar acentos nem maiúsculas. Devolve a posição no texto (NFC) ou -1. */
+export function foldedIndexOf(text, query) {
+    const haystack = foldKeepLength(String(text ?? '').normalize('NFC'));
+    const needle = foldKeepLength(String(query ?? '').normalize('NFC').trim());
+    if (!needle) return -1;
+    return haystack.indexOf(needle);
+}
+
+/**
+ * Acha `needle` em `text` tolerando diferenças que modelos costumam introduzir: forma Unicode
+ * (NFC/NFD, ex. "ã" composto ou decomposto), quebras de linha \r\n e espaços no fim das linhas.
+ * Devolve as versões de texto/needle em que a busca funcionou, para a troca ser feita nelas.
+ * @returns {{ text: string, needle: string, count: number }}
+ */
+export function locateFlexible(text, needle) {
+    const transforms = [
+        value => value,
+        value => value.normalize('NFC'),
+        value => value.normalize('NFC').replace(/\r\n?/g, '\n'),
+        value => value.normalize('NFC').replace(/\r\n?/g, '\n').replace(/[ \t]+$/gm, ''),
+    ];
+    for (const transform of transforms) {
+        const candidateText = transform(String(text));
+        const candidateNeedle = transform(String(needle));
+        if (!candidateNeedle) continue;
+        const count = countOccurrences(candidateText, candidateNeedle);
+        if (count > 0) return { text: candidateText, needle: candidateNeedle, count };
+    }
+    return { text: String(text), needle: String(needle), count: 0 };
+}
+
+/** Normaliza recursivamente todas as strings de um valor JSON para NFC. */
+export function deepNormalizeStrings(value) {
+    if (typeof value === 'string') return value.normalize('NFC');
+    if (Array.isArray(value)) return value.map(deepNormalizeStrings);
+    if (value && typeof value === 'object') {
+        const result = {};
+        for (const [key, item] of Object.entries(value)) result[key] = deepNormalizeStrings(item);
+        return result;
+    }
+    return value;
 }
 
 export function truncate(text, maxChars) {

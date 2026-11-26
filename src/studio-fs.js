@@ -1,17 +1,22 @@
 // Sistema de arquivos virtual do Agent Studio.
 // Um índice (meta/index) guarda caminhos e metadados; o conteúdo de cada arquivo fica numa chave
 // própria (files/<id>), porque as chaves do extension store não aceitam "/".
+//
+// Os caminhos são tolerantes: "Personagens/lyra" acha "personagens/Lyra.md", e acentos, maiúsculas
+// ou a forma Unicode (composta/decomposta) não importam para achar algo que já existe.
 
 import {
     ancestorsOf,
     baseName,
     clampInt,
     countLines,
-    countOccurrences,
     createSerialQueue,
+    foldedIndexOf,
+    foldText,
     generateId,
     isInside,
     joinPath,
+    locateFlexible,
     LOG_PREFIX,
     normalizePath,
     parentPath,
@@ -64,6 +69,10 @@ function normalizeIndex(stored) {
     return index;
 }
 
+const foldPath = path => path.split('/').map(foldText).join('/');
+const withoutExtension = path => path.replace(/\.[^./]+$/, '');
+const hasExtension = path => /\.[^./]+$/.test(baseName(path));
+
 export class StudioFS {
     /** @param {import('./storage.js').Storage} storage */
     constructor(storage) {
@@ -75,6 +84,8 @@ export class StudioFS {
         /** @type {Map<string, string>} id -> texto */
         this.contentCache = new Map();
         this.listeners = new Set();
+        /** @type {import('./journal.js').RunJournal|null} */
+        this.journal = null;
     }
 
     // ---------- infraestrutura ----------
@@ -153,15 +164,6 @@ export class StudioFS {
         return this.allFolders().has(path);
     }
 
-    requireFile(path) {
-        const id = this.byPath.get(path);
-        if (id) return { id, meta: this.index.files[id] };
-        if (this.folderExists(path)) {
-            throw new Error(`"${path}" is a folder, not a file. Use studio_list to see its contents.`);
-        }
-        throw new Error(`File not found: "${path}". Use studio_list or studio_search to find the right path.`);
-    }
-
     /** Mantém uma pasta mesmo que fique vazia (como num sistema de arquivos normal). */
     keepFolder(path) {
         if (path && !this.index.folders.includes(path)) this.index.folders.push(path);
@@ -175,16 +177,169 @@ export class StudioFS {
         }
     }
 
+    // ---------- resolução tolerante de caminhos ----------
+
+    /**
+     * Acha um arquivo/pasta existente: primeiro exato; depois ignorando acentos, maiúsculas e
+     * (para arquivos) a extensão. Devolve null se não achar; erro se ficar ambíguo.
+     * @param {'file'|'folder'|'any'} kind
+     */
+    resolveExisting(path, kind = 'any') {
+        if (kind !== 'folder' && this.byPath.has(path)) return { path, type: 'file' };
+        if (kind !== 'file' && this.folderExists(path)) return { path, type: 'folder' };
+        const target = foldPath(path);
+        const found = [];
+        if (kind !== 'folder') {
+            for (const filePath of this.byPath.keys()) {
+                const folded = foldPath(filePath);
+                if (folded === target || foldPath(withoutExtension(filePath)) === target) found.push({ path: filePath, type: 'file' });
+            }
+        }
+        if (kind !== 'file') {
+            for (const folder of this.allFolders()) {
+                if (foldPath(folder) === target) found.push({ path: folder, type: 'folder' });
+            }
+        }
+        if (found.length === 1) return found[0];
+        if (found.length > 1) {
+            throw new Error(`"${path}" is ambiguous; it could be: ${found.map(item => `"${item.path}"`).join(', ')}.`);
+        }
+        return null;
+    }
+
+    requireFile(rawPath) {
+        const path = normalizePath(rawPath);
+        const resolved = this.resolveExisting(path, 'file');
+        if (resolved) return { path: resolved.path, id: this.byPath.get(resolved.path) };
+        if (this.resolveExisting(path, 'folder')) {
+            throw new Error(`"${path}" is a folder, not a file. Use studio_list to see its contents.`);
+        }
+        throw new Error(`File not found: "${path}". Use studio_list or studio_search to find the right path.`);
+    }
+
+    /**
+     * Caminho para escrever: reaproveita pastas e arquivo já existentes que só diferem em acentos ou
+     * maiúsculas (evita criar "Personagens/" ao lado de "personagens/"), e põe ".md" se faltar extensão.
+     */
+    canonicalWritePath(path) {
+        const segments = path.split('/');
+        const folders = this.allFolders();
+        let current = '';
+        for (const segment of segments.slice(0, -1)) {
+            const exact = joinPath(current, segment);
+            if (folders.has(exact)) {
+                current = exact;
+                continue;
+            }
+            const matches = [...folders].filter(folder => parentPath(folder) === current && foldText(baseName(folder)) === foldText(segment));
+            current = matches.length === 1 ? matches[0] : exact;
+        }
+        let name = segments[segments.length - 1];
+        const exactFile = joinPath(current, name);
+        if (this.byPath.has(exactFile) || folders.has(exactFile)) return exactFile;
+        const sameNameFolder = [...folders].filter(folder => parentPath(folder) === current && foldText(baseName(folder)) === foldText(name));
+        if (sameNameFolder.length === 1) return sameNameFolder[0];
+        const sameFolder = [...this.byPath.keys()].filter(filePath => parentPath(filePath) === current);
+        const byName = sameFolder.filter(filePath => foldText(baseName(filePath)) === foldText(name));
+        if (byName.length === 1) return byName[0];
+        if (!hasExtension(name)) {
+            const byStem = sameFolder.filter(filePath => foldText(withoutExtension(baseName(filePath))) === foldText(name));
+            if (byStem.length === 1) return byStem[0];
+            name = `${name}.md`;
+        }
+        return joinPath(current, name);
+    }
+
+    canonicalFolderPath(path) {
+        const segments = path.split('/');
+        const folders = this.allFolders();
+        let current = '';
+        for (const segment of segments) {
+            const exact = joinPath(current, segment);
+            if (folders.has(exact)) {
+                current = exact;
+                continue;
+            }
+            const matches = [...folders].filter(folder => parentPath(folder) === current && foldText(baseName(folder)) === foldText(segment));
+            current = matches.length === 1 ? matches[0] : exact;
+        }
+        return current;
+    }
+
+    // ---------- diário de alterações (desfazer ao regenerar) ----------
+
+    async captureFile(runId, id) {
+        if (!runId || !this.journal) return;
+        await this.journal.capture(runId, `studio:${id}`, async () => {
+            const meta = this.index.files[id];
+            return {
+                kind: 'studio_file',
+                id,
+                before: meta
+                    ? { exists: true, meta: { ...meta }, text: await this.loadContent(id) }
+                    : { exists: false },
+            };
+        });
+    }
+
+    async captureFolders(runId) {
+        if (!runId || !this.journal) return;
+        await this.journal.capture(runId, 'studio:folders', async () => ({ kind: 'studio_folders', before: [...this.index.folders] }));
+    }
+
+    /** Volta os arquivos tocados por uma run ao estado anterior. Devolve quantos arquivos mudaram. */
+    undoEntries(entries) {
+        return this.run(async () => {
+            const files = entries.filter(entry => entry.kind === 'studio_file');
+            const now = new Date().toISOString();
+            let changed = 0;
+            // 1) Arquivos que a run criou vão para a lixeira.
+            for (const entry of files) {
+                if (entry.before.exists || !this.index.files[entry.id]) continue;
+                const meta = this.index.files[entry.id];
+                this.index.trash[entry.id] = { path: meta.path, size: meta.size, deletedAt: now };
+                delete this.index.files[entry.id];
+                changed++;
+            }
+            this.rebuildPathMap();
+            // 2) Arquivos que já existiam voltam ao conteúdo e lugar de antes.
+            for (const entry of files) {
+                if (!entry.before.exists) continue;
+                const meta = { ...entry.before.meta };
+                const occupant = this.byPath.get(meta.path);
+                if (occupant && occupant !== entry.id) {
+                    const other = this.index.files[occupant];
+                    this.index.trash[occupant] = { path: other.path, size: other.size, deletedAt: now };
+                    delete this.index.files[occupant];
+                }
+                delete this.index.trash[entry.id];
+                this.index.files[entry.id] = meta;
+                await this.storeContent(entry.id, entry.before.text);
+                this.rebuildPathMap();
+                changed++;
+            }
+            const folders = entries.find(entry => entry.kind === 'studio_folders');
+            if (folders) this.index.folders = [...folders.before];
+            await this.saveIndex();
+            this.emit({ type: 'undo' });
+            return changed;
+        });
+    }
+
     // ---------- operações usadas pelas ferramentas e pelo painel ----------
 
     list({ path = '', recursive = true, limit = 300 } = {}) {
         return this.run(() => {
-            const folder = normalizePath(path, { allowRoot: true });
-            if (folder && !this.folderExists(folder)) {
-                if (this.byPath.has(folder)) {
-                    throw new Error(`"${folder}" is a file, not a folder. Use studio_read to read it.`);
+            let folder = normalizePath(path, { allowRoot: true });
+            if (folder) {
+                const resolved = this.resolveExisting(folder, 'folder');
+                if (!resolved) {
+                    if (this.resolveExisting(folder, 'file')) {
+                        throw new Error(`"${folder}" is a file, not a folder. Use studio_read to read it.`);
+                    }
+                    throw new Error(`Folder not found: "${folder}". Use studio_list without a path to see the whole studio.`);
                 }
-                throw new Error(`Folder not found: "${folder}".`);
+                folder = resolved.path;
             }
             const max = clampInt(limit, { min: 1, max: 1000, fallback: 300 });
             const within = candidate => candidate !== folder && isInside(candidate, folder)
@@ -209,8 +364,7 @@ export class StudioFS {
 
     read({ path, startLine, lineCount, maxChars } = {}) {
         return this.run(async () => {
-            const filePath = normalizePath(path);
-            const { id } = this.requireFile(filePath);
+            const { path: filePath, id } = this.requireFile(path);
             const text = await this.loadContent(id);
             const lines = text.split('\n');
             const totalLines = lines.length;
@@ -244,35 +398,37 @@ export class StudioFS {
         });
     }
 
-    write({ path, content, mode = 'replace' } = {}) {
+    write({ path, content, mode = 'replace', runId } = {}) {
         return this.run(async () => {
-            const filePath = normalizePath(path);
-            if (typeof content !== 'string') throw new Error('content must be a string.');
-            if (mode !== 'replace' && mode !== 'append') throw new Error('mode must be "replace" or "append".');
+            const filePath = this.canonicalWritePath(normalizePath(path));
+            const body = typeof content === 'string' ? content : (content === undefined || content === null ? null : String(content));
+            if (body === null) throw new Error('content is required (the text of the file).');
+            const writeMode = mode === 'append' ? 'append' : 'replace';
             if (this.folderExists(filePath) && !this.byPath.has(filePath)) {
                 throw new Error(`"${filePath}" is a folder. Choose a file path inside it, e.g. "${filePath}/notes.md".`);
             }
             this.assertNoFileAncestor(filePath);
 
             const existingId = this.byPath.get(filePath);
-            let text = content;
-            if (mode === 'append' && existingId) {
-                text = (await this.loadContent(existingId)) + content;
+            const id = existingId ?? generateId('f');
+            await this.captureFile(runId, id);
+
+            let text = body;
+            if (writeMode === 'append' && existingId) {
+                const current = await this.loadContent(existingId);
+                text = current && !current.endsWith('\n') && !body.startsWith('\n') ? `${current}\n${body}` : current + body;
             }
             if (text.length > MAX_FILE_CHARS) {
                 throw new Error(`File too large (${text.length} chars). The limit is ${MAX_FILE_CHARS}; split it into several files.`);
             }
 
             const now = new Date().toISOString();
-            let id = existingId;
-            if (id) {
-                await this.storeContent(id, text);
+            await this.storeContent(id, text);
+            if (existingId) {
                 const meta = this.index.files[id];
                 meta.size = text.length;
                 meta.updated = now;
             } else {
-                id = generateId('f');
-                await this.storeContent(id, text);
                 this.index.files[id] = { path: filePath, size: text.length, created: now, updated: now };
                 this.byPath.set(filePath, id);
             }
@@ -282,43 +438,42 @@ export class StudioFS {
         });
     }
 
-    edit({ path, oldString, newString, replaceAll = false } = {}) {
+    edit({ path, oldString, newString, replaceAll = false, runId } = {}) {
         return this.run(async () => {
-            const filePath = normalizePath(path);
             if (typeof oldString !== 'string' || oldString.length === 0) {
                 throw new Error('old_string must be a non-empty string. To rewrite the whole file use studio_write.');
             }
-            if (typeof newString !== 'string') throw new Error('new_string must be a string.');
-            const { id, meta } = this.requireFile(filePath);
-            const text = await this.loadContent(id);
-            const occurrences = countOccurrences(text, oldString);
-            if (occurrences === 0) {
-                throw new Error(`old_string was not found in "${filePath}". Read the file again and copy the exact text, including spaces and line breaks.`);
+            const replacement = typeof newString === 'string' ? newString.normalize('NFC') : (newString === undefined || newString === null ? '' : String(newString));
+            const { path: filePath, id } = this.requireFile(path);
+            const original = await this.loadContent(id);
+            const { text, needle, count } = locateFlexible(original, oldString);
+            if (count === 0) {
+                throw new Error(`old_string was not found in "${filePath}". Read the file again (studio_read) and copy the exact text.`);
             }
-            if (occurrences > 1 && !replaceAll) {
-                throw new Error(`old_string matches ${occurrences} places in "${filePath}". Include more surrounding text to make it unique, or set replace_all to true.`);
+            if (count > 1 && !replaceAll) {
+                throw new Error(`old_string matches ${count} places in "${filePath}". Include more surrounding text to make it unique, or set replace_all to true.`);
             }
-            const updated = replaceAll
-                ? text.split(oldString).join(newString)
-                : text.replace(oldString, () => newString);
-            if (updated.length > MAX_FILE_CHARS) {
-                throw new Error(`File would exceed ${MAX_FILE_CHARS} chars.`);
-            }
+            const updated = replaceAll ? text.split(needle).join(replacement) : text.replace(needle, () => replacement);
+            if (updated.length > MAX_FILE_CHARS) throw new Error(`File would exceed ${MAX_FILE_CHARS} chars.`);
+
+            await this.captureFile(runId, id);
             await this.storeContent(id, updated);
+            const meta = this.index.files[id];
             meta.size = updated.length;
             meta.updated = new Date().toISOString();
             await this.saveIndex();
             this.emit({ type: 'write', path: filePath, id });
-            return { path: filePath, replacements: replaceAll ? occurrences : 1, size: updated.length };
+            return { path: filePath, replacements: replaceAll ? count : 1, size: updated.length };
         });
     }
 
-    makeFolder({ path } = {}) {
+    makeFolder({ path, runId } = {}) {
         return this.run(async () => {
-            const folder = normalizePath(path);
+            const folder = this.canonicalFolderPath(normalizePath(path));
             if (this.byPath.has(folder)) throw new Error(`"${folder}" already exists as a file.`);
             this.assertNoFileAncestor(folder);
             if (this.folderExists(folder)) return { path: folder, created: false };
+            await this.captureFolders(runId);
             this.index.folders.push(folder);
             await this.saveIndex();
             this.emit({ type: 'folder', path: folder });
@@ -326,27 +481,35 @@ export class StudioFS {
         });
     }
 
-    move({ from, to } = {}) {
+    move({ from, to, runId } = {}) {
         return this.run(async () => {
-            const source = normalizePath(from);
+            const sourceInput = normalizePath(from);
+            const resolved = this.resolveExisting(sourceInput, 'any');
+            if (!resolved) throw new Error(`Not found: "${sourceInput}". Use studio_list to see what exists.`);
+            const source = resolved.path;
+            const fileId = resolved.type === 'file' ? this.byPath.get(source) : null;
+
             // '' (raiz) é aceito como destino: o item vai para a raiz com o mesmo nome.
             let target = normalizePath(to, { allowRoot: true });
-
-            const fileId = this.byPath.get(source);
-            const isFolder = !fileId && this.folderExists(source);
-            if (!fileId && !isFolder) throw new Error(`Not found: "${source}".`);
-
-            if (this.folderExists(target) && target !== source) {
-                target = joinPath(target, baseName(source));
+            const targetFolder = target ? this.resolveExisting(target, 'folder') : { path: '' };
+            if (targetFolder && targetFolder.path !== source) {
+                target = joinPath(targetFolder.path, baseName(source));
+            } else if (target) {
+                const canonical = fileId ? this.canonicalWritePath(target) : this.canonicalFolderPath(target);
+                // Se o "parecido" achado é o próprio item, é uma renomeação de maiúsculas/acentos: usa o pedido.
+                target = canonical === source ? target : canonical;
             }
             if (target === source) return { from: source, to: target, moved: false };
             if (this.byPath.has(target) || this.folderExists(target)) {
                 throw new Error(`Cannot move to "${target}": something already exists there.`);
             }
             this.assertNoFileAncestor(target);
+            if (!fileId && isInside(target, source)) throw new Error('A folder cannot be moved inside itself.');
 
-            this.keepFolder(parentPath(source));
+            await this.captureFolders(runId);
             if (fileId) {
+                await this.captureFile(runId, fileId);
+                this.keepFolder(parentPath(source));
                 this.index.files[fileId].path = target;
                 this.byPath.delete(source);
                 this.byPath.set(target, fileId);
@@ -355,15 +518,16 @@ export class StudioFS {
                 return { from: source, to: target, type: 'file', moved: true };
             }
 
-            if (isInside(target, source)) throw new Error('A folder cannot be moved inside itself.');
             const rebase = path => target + path.slice(source.length);
             let filesMoved = 0;
-            for (const meta of Object.values(this.index.files)) {
+            for (const [id, meta] of Object.entries(this.index.files)) {
                 if (isInside(meta.path, source)) {
+                    await this.captureFile(runId, id);
                     meta.path = rebase(meta.path);
                     filesMoved++;
                 }
             }
+            this.keepFolder(parentPath(source));
             this.index.folders = this.index.folders.map(folder => (isInside(folder, source) ? rebase(folder) : folder));
             if (!this.index.folders.includes(target)) this.index.folders.push(target);
             this.rebuildPathMap();
@@ -373,30 +537,35 @@ export class StudioFS {
         });
     }
 
-    delete({ path } = {}) {
+    delete({ path, runId } = {}) {
         return this.run(async () => {
-            const target = normalizePath(path);
+            const input = normalizePath(path);
+            const resolved = this.resolveExisting(input, 'any');
+            if (!resolved) throw new Error(`Not found: "${input}". Use studio_list to see what exists.`);
+            const target = resolved.path;
             const now = new Date().toISOString();
-            const fileId = this.byPath.get(target);
             const trashFile = id => {
                 const meta = this.index.files[id];
                 this.index.trash[id] = { path: meta.path, size: meta.size, deletedAt: now };
                 delete this.index.files[id];
             };
 
+            await this.captureFolders(runId);
             this.keepFolder(parentPath(target));
-            if (fileId) {
+            if (resolved.type === 'file') {
+                const fileId = this.byPath.get(target);
+                await this.captureFile(runId, fileId);
                 trashFile(fileId);
                 this.rebuildPathMap();
                 await this.saveIndex();
                 this.emit({ type: 'delete', path: target });
                 return { deleted: target, type: 'file', files: 1, note: 'Moved to the Studio trash; the user can restore it.' };
             }
-            if (!this.folderExists(target)) throw new Error(`Not found: "${target}".`);
 
             let count = 0;
             for (const [id, meta] of Object.entries(this.index.files)) {
                 if (isInside(meta.path, target)) {
+                    await this.captureFile(runId, id);
                     trashFile(id);
                     count++;
                 }
@@ -411,12 +580,13 @@ export class StudioFS {
 
     search({ query, path = '', limit = 20, caseSensitive = false } = {}) {
         return this.run(async () => {
-            const raw = typeof query === 'string' ? query.trim() : '';
+            const raw = typeof query === 'string' ? query.normalize('NFC').trim() : String(query ?? '').trim();
             if (!raw) throw new Error('query is required.');
-            const folder = normalizePath(path, { allowRoot: true });
+            let folder = normalizePath(path, { allowRoot: true });
+            if (folder) folder = this.resolveExisting(folder, 'folder')?.path ?? folder;
             const max = clampInt(limit, { min: 1, max: 100, fallback: 20 });
-            const needle = caseSensitive ? raw : raw.toLowerCase();
-            const normalize = value => (caseSensitive ? value : value.toLowerCase());
+            // Sem diferenciar maiúsculas, a busca também ignora acentos ("acao" acha "ação").
+            const find = (text, needle) => (caseSensitive ? text.normalize('NFC').indexOf(needle) : foldedIndexOf(text, needle));
 
             const results = [];
             let truncated = false;
@@ -426,15 +596,16 @@ export class StudioFS {
 
             outer:
             for (const [id, meta] of files) {
-                if (normalize(meta.path).includes(needle)) {
+                if (find(meta.path, raw) !== -1) {
                     results.push({ path: meta.path, line: null, snippet: '(file name matches)' });
                     if (results.length >= max) { truncated = true; break; }
                 }
                 const lines = (await this.loadContent(id)).split('\n');
                 for (let i = 0; i < lines.length; i++) {
-                    const position = normalize(lines[i]).indexOf(needle);
+                    const line = lines[i].normalize('NFC');
+                    const position = find(line, raw);
                     if (position === -1) continue;
-                    results.push({ path: meta.path, line: i + 1, snippet: snippetAround(lines[i], position, raw.length) });
+                    results.push({ path: meta.path, line: i + 1, snippet: snippetAround(line, position, raw.length) });
                     if (results.length >= max) { truncated = true; break outer; }
                 }
             }
