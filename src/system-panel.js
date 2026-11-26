@@ -1,5 +1,6 @@
 // Aba "Sistema" do Agent Studio: fichas (jogador e NPCs) e regras (atributos, perícias, recursos).
 
+import { DICE_PRESETS } from './dice.js';
 import { abbreviation, formatModifier, KINDS } from './system.js';
 import { confirmDialog, promptText } from './ui.js';
 import { errorMessage, escapeHtml, LOG_PREFIX } from './util.js';
@@ -10,14 +11,18 @@ const KIND_LABELS = {
     resources: { title: 'Recursos', single: 'recurso' },
     stats: { title: 'Estatísticas', single: 'estatística' },
     abilityFields: { title: 'Campos de habilidade', single: 'campo de habilidade' },
+    trainingLevels: { title: 'Níveis de treinamento', single: 'nível de treinamento' },
+    slots: { title: 'Partes do corpo (equipamento)', single: 'parte do corpo' },
 };
 const KIND_HINTS = {
+    trainingLevels: 'Escolhidos em cada perícia da ficha. O bônus soma no teste (ex.: Treinado +5, Veterano +10, Especialista +15).',
+    slots: 'Onde os itens podem ser equipados. O bônus de um item só vale enquanto ele está equipado; o resto fica na mochila.',
     stats: 'Valores derivados: base + modificador do atributo + bônus da ficha. A marcada como Defesa é a CD dos ataques contra o personagem.',
     abilityFields: 'Campos extras que toda habilidade tem, além de custo, teste e efeito (ex.: Alcance, Duração, Recarga).',
 };
 const LOCATION_LABELS = { player: 'Jogador', chat: 'NPC deste chat', lorebook: 'NPC de lorebook' };
 const RESOURCE_COLORS = ['#d9534f', '#4a90d9', '#e0a35d', '#6fbf73', '#a77bd9'];
-const FOCUS_KEYS = ['sheetField', 'id', 'res', 'form', 'role'];
+const FOCUS_KEYS = ['sheetField', 'id', 'res', 'form', 'role', 'dice'];
 
 export class SystemView {
     constructor({ system, lore, activity, container }) {
@@ -31,6 +36,8 @@ export class SystemView {
         this.editing = null;
         /** id da habilidade em edição na ficha aberta ('new' para uma nova). */
         this.editingAbility = null;
+        /** id do item em edição na ficha aberta ('new' para um novo). */
+        this.editingItem = null;
         this.data = null;
         this.pendingRefresh = false;
     }
@@ -65,7 +72,7 @@ export class SystemView {
 
     /** Atualização vinda de fora (ex.: a IA mudou a Vida). Não atrapalha quem está digitando. */
     refresh() {
-        if (this.isTyping() || this.editing || this.editingAbility) {
+        if (this.isTyping() || this.editing || this.editingAbility || this.editingItem) {
             this.pendingRefresh = true;
             return;
         }
@@ -111,6 +118,7 @@ export class SystemView {
             let badge = '';
             if (kind === KINDS.skills) badge = `<span class="agst-badge">${escapeHtml(attributeName(item.attribute) ?? 'sem atributo')}</span>`;
             if (kind === KINDS.resources) badge = `<span class="agst-badge">máx. padrão ${item.defaultMax}</span>`;
+            if (kind === KINDS.trainingLevels) badge = `<span class="agst-badge agst-badge-accent">${formatModifier(item.bonus)}</span>`;
             if (kind === KINDS.stats) {
                 const formula = [String(item.base), attributeName(item.attribute)].filter(Boolean).join(' + ');
                 badge = `<span class="agst-badge">${escapeHtml(formula)} + bônus</span>${item.defense ? ' <span class="agst-badge agst-badge-accent">Defesa</span>' : ''}`;
@@ -143,6 +151,9 @@ export class SystemView {
             const maxInput = kind === KINDS.resources
                 ? `<label class="agst-sys-inline">Máximo padrão <input type="number" class="text_pole agst-number" data-form="defaultMax" min="0" value="${item?.defaultMax ?? 10}"></label>`
                 : '';
+            const bonusInput = kind === KINDS.trainingLevels
+                ? `<label class="agst-sys-inline">Bônus <input type="number" class="text_pole agst-number" data-form="bonus" value="${item?.bonus ?? 5}"></label>`
+                : '';
             const statInputs = kind === KINDS.stats
                 ? `<label class="agst-sys-inline">Valor base <input type="number" class="text_pole agst-number" data-form="base" value="${item?.base ?? 0}"></label>
                    <label class="checkbox_label"><input type="checkbox" data-form="defense"${item?.defense ? ' checked' : ''}> <span>É a Defesa (CD dos ataques contra o personagem)</span></label>`
@@ -150,7 +161,7 @@ export class SystemView {
             return `
                 <div class="agst-sys-form" data-kind="${kind}" data-item="${escapeHtml(item?.id ?? 'new')}">
                     <input type="text" class="text_pole" data-form="name" maxlength="60" placeholder="Nome" value="${escapeHtml(item?.name ?? '')}">
-                    ${kind === KINDS.stats ? statInputs : ''}${attributeSelect}${maxInput}
+                    ${kind === KINDS.stats ? statInputs : ''}${attributeSelect}${maxInput}${bonusInput}
                     <textarea class="text_pole" data-form="description" rows="3" placeholder="Descrição: a IA lê isto para saber quando usar">${escapeHtml(item?.description ?? '')}</textarea>
                     <div class="agst-sys-form-actions">
                         <button type="button" class="menu_button menu_button_icon" data-sys-action="save-item"><i class="fa-solid fa-check"></i><span>Salvar</span></button>
@@ -180,11 +191,14 @@ export class SystemView {
 
         this.body.innerHTML = `
             <div class="agst-sys-scroll">
+                ${this.diceMethodHtml(definition)}
                 ${section(KINDS.attributes)}
                 ${section(KINDS.skills)}
+                ${section(KINDS.trainingLevels)}
                 ${section(KINDS.resources)}
                 ${section(KINDS.stats)}
                 ${section(KINDS.abilityFields)}
+                ${section(KINDS.slots)}
                 <div class="agst-sys-note agst-muted">
                     <b>Como funciona:</b> modificador = (valor − 10) ÷ 2, arredondado para baixo
                     (8–9 = −1, 10–11 = +0, 12–13 = +1, 14–15 = +2…). Perícia = modificador do atributo + bônus da perícia.
@@ -199,6 +213,70 @@ export class SystemView {
         this.body.querySelector('.agst-sys-form [data-form="name"]')?.focus();
     }
 
+    /** Seção "Método de rolagem": modelos prontos + campos para personalizar. */
+    diceMethodHtml(definition) {
+        const dice = definition.dice;
+        const option = (value, label, current) => `<option value="${value}"${String(current) === String(value) ? ' selected' : ''}>${label}</option>`;
+        const presets = Object.entries(DICE_PRESETS).map(([id, preset]) => `
+            <button type="button" class="menu_button agst-preset${dice.preset === id ? ' is-active' : ''}" data-sys-action="apply-preset" data-preset="${id}" title="${escapeHtml(preset.description)}">
+                ${escapeHtml(preset.label.split(':')[0])}
+            </button>`).join('');
+        const current = dice.preset === 'custom' ? 'Personalizado' : DICE_PRESETS[dice.preset]?.label ?? '';
+        const skillExample = dice.countMode === 'attribute'
+            ? `valor do atributo × d${dice.sides}`
+            : `${dice.fixedCount}d${dice.sides}`;
+        const keepText = { highest: 'fica o maior', lowest: 'fica o menor', sum: 'soma todos' }[dice.keep];
+        const attributeText = { modifier: '+ modificador do atributo', value: '+ valor do atributo', none: '' }[dice.attributeBonus];
+        return `
+            <div class="agst-sys-section">
+                <div class="agst-sys-section-head"><h4>Método de rolagem</h4><span class="agst-muted">${escapeHtml(current)}</span></div>
+                <div class="agst-dice-presets">${presets}</div>
+                <div class="agst-dice-grid">
+                    <label>Quantos dados
+                        <select class="text_pole" data-dice="countMode">
+                            ${option('fixed', 'Quantidade fixa', dice.countMode)}
+                            ${option('attribute', 'Valor do atributo', dice.countMode)}
+                        </select>
+                    </label>
+                    <label>Quantidade fixa
+                        <input type="number" class="text_pole" data-dice="fixedCount" min="1" max="30" value="${dice.fixedCount}"${dice.countMode === 'attribute' ? ' disabled' : ''}>
+                    </label>
+                    <label>Tipo de dado
+                        <select class="text_pole" data-dice="sides">
+                            ${[4, 6, 8, 10, 12, 20, 100].map(sides => option(sides, `d${sides}`, dice.sides)).join('')}
+                        </select>
+                    </label>
+                    <label>Resultado
+                        <select class="text_pole" data-dice="keep">
+                            ${option('highest', 'Fica com o maior', dice.keep)}
+                            ${option('lowest', 'Fica com o menor', dice.keep)}
+                            ${option('sum', 'Soma todos', dice.keep)}
+                        </select>
+                    </label>
+                    <label>Atributo no total
+                        <select class="text_pole" data-dice="attributeBonus">
+                            ${option('modifier', 'Modificador D&D: (valor − 10) ÷ 2', dice.attributeBonus)}
+                            ${option('value', 'O próprio valor', dice.attributeBonus)}
+                            ${option('none', 'Não soma (só define os dados)', dice.attributeBonus)}
+                        </select>
+                    </label>
+                    <label>Com 0 dados
+                        <select class="text_pole" data-dice="zeroRule">
+                            ${option('lowest2', 'Rola 2 e fica com o menor', dice.zeroRule)}
+                            ${option('none', 'Rola 1', dice.zeroRule)}
+                        </select>
+                    </label>
+                    <label>Valor inicial dos atributos
+                        <input type="number" class="text_pole" data-dice="defaultScore" min="0" max="99" value="${definition.defaultScore}">
+                    </label>
+                </div>
+                <div class="agst-muted agst-sys-hint">
+                    Teste de perícia = <b>${escapeHtml(skillExample)}</b> (${keepText}) ${escapeHtml(attributeText)} + treinamento + modificador extra + itens.
+                    Trocar o método não muda os valores já salvos nas fichas: ajuste os atributos se precisar.
+                </div>
+            </div>`;
+    }
+
     async saveItem(form) {
         const kind = form.dataset.kind;
         const id = form.dataset.item;
@@ -210,6 +288,7 @@ export class SystemView {
             attribute: value('attribute') || null,
             defaultMax: value('defaultMax'),
             base: value('base'),
+            bonus: value('bonus'),
             defense: form.querySelector('[data-form="defense"]')?.checked === true,
         });
         this.editing = null;
@@ -259,25 +338,40 @@ export class SystemView {
                 </div>`;
         }).join('');
 
+        // No D&D o destaque do atributo é o modificador; nos outros métodos, a rolagem ("2d20", "1d20+3").
+        const dndStyle = definition.dice.attributeBonus === 'modifier' && definition.dice.countMode === 'fixed';
         const attributes = selected.attributes.map(attribute => `
             <div class="agst-attr" title="${escapeHtml(describe(KINDS.attributes, attribute.id))}">
                 <div class="agst-attr-name">${escapeHtml(attribute.name)}</div>
-                <div class="agst-mod">${formatModifier(attribute.modifier)}</div>
+                <div class="agst-mod">${escapeHtml(dndStyle ? formatModifier(attribute.modifier) : attribute.roll)}</div>
                 <div class="agst-attr-row">
                     <input type="number" class="text_pole agst-attr-input" data-sheet-field="attr" data-id="${escapeHtml(attribute.id)}" value="${attribute.score}" min="0" max="99" aria-label="${escapeHtml(attribute.name)}">
-                    <button type="button" class="agst-icon-button agst-roll" data-sys-action="roll" data-check="${escapeHtml(attribute.id)}" title="Rolar ${escapeHtml(attribute.name)}: d20 ${formatModifier(attribute.modifier)}"><i class="fa-solid fa-dice-d20"></i></button>
+                    <button type="button" class="agst-icon-button agst-roll" data-sys-action="roll" data-check="${escapeHtml(attribute.id)}" title="Rolar ${escapeHtml(attribute.name)}: ${escapeHtml(attribute.roll)}"><i class="fa-solid fa-dice-d20"></i></button>
                 </div>
             </div>`).join('');
 
-        const skills = selected.skills.map(skill => `
+        const levels = definition.trainingLevels;
+        const skills = selected.skills.map(skill => {
+            const training = levels.length
+                ? `<select class="text_pole agst-training-select" data-sheet-field="training" data-id="${escapeHtml(skill.id)}" aria-label="Treinamento em ${escapeHtml(skill.name)}">
+                        <option value="">—</option>
+                        ${levels.map(level => `<option value="${escapeHtml(level.id)}"${skill.training === level.id ? ' selected' : ''}>${escapeHtml(level.name)} (${formatModifier(level.bonus)})</option>`).join('')}
+                   </select>`
+                : '';
+            const breakdown = [
+                skill.trainingName ? `${skill.trainingName} ${formatModifier(skill.trainingBonus)}` : null,
+                skill.bonus ? `modificador ${formatModifier(skill.bonus)}` : null,
+                skill.itemBonus ? `itens ${formatModifier(skill.itemBonus)}` : null,
+            ].filter(Boolean).join(', ');
+            return `
             <div class="agst-skill" title="${escapeHtml(describe(KINDS.skills, skill.id))}">
                 <span class="agst-skill-name">${escapeHtml(skill.name)} <span class="agst-muted">${escapeHtml(skill.attribute ? abbreviation(skill.attribute) : '—')}</span></span>
-                <label class="agst-skill-bonus agst-muted">bônus
-                    <input type="number" class="text_pole agst-skill-input" data-sheet-field="skill" data-id="${escapeHtml(skill.id)}" value="${skill.bonus}" aria-label="Bônus de ${escapeHtml(skill.name)}">
-                </label>
-                <span class="agst-mod">${formatModifier(skill.total)}</span>
-                <button type="button" class="agst-icon-button agst-roll" data-sys-action="roll" data-check="${escapeHtml(skill.id)}" title="Rolar ${escapeHtml(skill.name)}: d20 ${formatModifier(skill.total)}"><i class="fa-solid fa-dice-d20"></i></button>
-            </div>`).join('');
+                ${training}
+                <input type="number" class="text_pole agst-skill-input" data-sheet-field="skill" data-id="${escapeHtml(skill.id)}" value="${skill.bonus}" title="Modificador extra (não fixo)" aria-label="Modificador extra de ${escapeHtml(skill.name)}">
+                <span class="agst-mod agst-roll-formula" title="${escapeHtml(breakdown || 'sem bônus')}">${escapeHtml(skill.roll)}</span>
+                <button type="button" class="agst-icon-button agst-roll" data-sys-action="roll" data-check="${escapeHtml(skill.id)}" title="Rolar ${escapeHtml(skill.name)}: ${escapeHtml(skill.roll)}"><i class="fa-solid fa-dice-d20"></i></button>
+            </div>`;
+        }).join('');
 
         const stats = selected.stats.map(stat => {
             const formula = [String(stat.base), stat.attribute ? `${abbreviation(stat.attribute)}` : null].filter(Boolean).join(' + ');
@@ -285,7 +379,7 @@ export class SystemView {
             <div class="agst-attr agst-stat${stat.defense ? ' is-defense' : ''}" title="${escapeHtml(describe(KINDS.stats, stat.id))}">
                 <div class="agst-attr-name">${stat.defense ? '<i class="fa-solid fa-shield-halved"></i> ' : ''}${escapeHtml(stat.name)}</div>
                 <div class="agst-mod">${stat.total}</div>
-                <div class="agst-muted agst-stat-formula">${escapeHtml(formula)} + bônus</div>
+                <div class="agst-muted agst-stat-formula">${escapeHtml(formula)} + bônus${stat.itemBonus ? ` (${formatModifier(stat.itemBonus)} itens)` : ''}</div>
                 <div class="agst-attr-row">
                     <input type="number" class="text_pole agst-attr-input" data-sheet-field="stat" data-id="${escapeHtml(stat.id)}" value="${stat.bonus}" aria-label="Bônus de ${escapeHtml(stat.name)}" title="Bônus (armadura, itens…)">
                     ${stat.defense ? '' : `<button type="button" class="agst-icon-button agst-roll" data-sys-action="roll" data-check="${escapeHtml(stat.id)}" title="Rolar ${escapeHtml(stat.name)}: d20 ${formatModifier(stat.total)}"><i class="fa-solid fa-dice-d20"></i></button>`}
@@ -294,6 +388,7 @@ export class SystemView {
         }).join('');
 
         const abilities = this.abilitiesHtml(selected, definition);
+        const equipment = this.equipmentHtml(selected, definition);
 
         let linkSection = '';
         if (selected.location !== 'player') {
@@ -354,6 +449,7 @@ export class SystemView {
                         <button type="button" class="agst-icon-button" data-sys-action="new-ability" title="Nova habilidade"><i class="fa-solid fa-plus"></i></button>
                     </div>
                     <div class="agst-ability-list">${abilities}</div>
+                    ${equipment}
                     ${linkSection}
                     <h5>Notas</h5>
                     <textarea class="text_pole agst-sheet-notes" data-sheet-field="notes" rows="4" placeholder="Equipamento, condições, traços…">${escapeHtml(selected.notes)}</textarea>
@@ -427,6 +523,95 @@ export class SystemView {
         return `${this.editingAbility === 'new' ? form(null) : ''}${rows || (this.editingAbility === 'new' ? '' : empty)}`;
     }
 
+    /** Equipamento (partes do corpo) e mochila; o item em edição vira formulário. */
+    equipmentHtml(sheet, definition) {
+        const targets = [
+            ...sheet.stats.map(stat => ({ id: stat.id, name: stat.name })),
+            ...sheet.skills.map(skill => ({ id: skill.id, name: skill.name })),
+        ];
+        const form = item => `
+            <div class="agst-sys-form agst-item-form" data-item-id="${escapeHtml(item?.id ?? 'new')}">
+                <div class="agst-item-form-row">
+                    <input type="text" class="text_pole" data-item-field="name" maxlength="60" placeholder="Nome (ex.: Espada longa)" value="${escapeHtml(item?.name ?? '')}">
+                    <label class="agst-sys-inline">Qtd. <input type="number" class="text_pole agst-number" data-item-field="quantity" min="0" value="${item?.quantity ?? 1}"></label>
+                </div>
+                <textarea class="text_pole" data-item-field="description" rows="2" placeholder="Descrição (dano, propriedades, valor…)">${escapeHtml(item?.description ?? '')}</textarea>
+                <div class="agst-ability-grid">
+                    <label>Onde está
+                        <select class="text_pole" data-item-field="slot">
+                            <option value="">Mochila</option>
+                            ${definition.slots.map(slot => `<option value="${escapeHtml(slot.id)}"${item?.slot === slot.id ? ' selected' : ''}>Equipado: ${escapeHtml(slot.name)}</option>`).join('')}
+                        </select>
+                    </label>
+                    <label>Bônus quando equipado
+                        <span class="agst-sys-inline">
+                            <select class="text_pole" data-item-field="bonusTarget">
+                                <option value="">(nenhum)</option>
+                                ${targets.map(target => `<option value="${escapeHtml(target.id)}"${item?.bonus?.target === target.id ? ' selected' : ''}>${escapeHtml(target.name)}</option>`).join('')}
+                            </select>
+                            <input type="number" class="text_pole agst-number" data-item-field="bonusValue" value="${item?.bonus?.value ?? 0}">
+                        </span>
+                    </label>
+                </div>
+                <div class="agst-sys-form-actions">
+                    <button type="button" class="menu_button menu_button_icon" data-sys-action="save-sheet-item"><i class="fa-solid fa-check"></i><span>Salvar</span></button>
+                    <button type="button" class="menu_button" data-sys-action="cancel-sheet-item">Cancelar</button>
+                </div>
+            </div>`;
+        const card = item => `
+            <div class="agst-item-card">
+                <div class="agst-item-main">
+                    <div><b>${escapeHtml(item.name)}</b>${item.quantity !== 1 ? ` <span class="agst-muted">×${item.quantity}</span>` : ''}
+                        ${item.bonus ? ` <span class="agst-badge agst-badge-accent">${formatModifier(item.bonus.value)} ${escapeHtml(item.bonus.targetName)}</span>` : ''}</div>
+                    ${item.description ? `<div class="agst-muted">${escapeHtml(item.description)}</div>` : ''}
+                </div>
+                <div class="agst-card-actions">
+                    ${!item.slot || item.quantity > 1 ? `
+                    <button type="button" class="agst-icon-button" data-sys-action="item-qty" data-item-id="${escapeHtml(item.id)}" data-delta="-1" title="−1 (usar/gastar)"><i class="fa-solid fa-minus"></i></button>
+                    <button type="button" class="agst-icon-button" data-sys-action="item-qty" data-item-id="${escapeHtml(item.id)}" data-delta="1" title="+1"><i class="fa-solid fa-plus"></i></button>` : ''}
+                    <button type="button" class="agst-icon-button" data-sys-action="edit-sheet-item" data-item-id="${escapeHtml(item.id)}" title="Editar / mover"><i class="fa-solid fa-pen"></i></button>
+                    <button type="button" class="agst-icon-button" data-sys-action="delete-sheet-item" data-item-id="${escapeHtml(item.id)}" title="Excluir"><i class="fa-solid fa-trash-can"></i></button>
+                </div>
+            </div>`;
+        const render = item => (this.editingItem === item.id ? form(item) : card(item));
+        const slots = definition.slots.map(slot => {
+            const worn = sheet.items.filter(item => item.slot === slot.id);
+            return `
+                <div class="agst-slot">
+                    <div class="agst-slot-name" title="${escapeHtml(slot.description)}">${escapeHtml(slot.name)}</div>
+                    <div class="agst-slot-items">${worn.map(render).join('') || '<span class="agst-muted">—</span>'}</div>
+                </div>`;
+        }).join('');
+        const backpack = sheet.items.filter(item => !item.slot);
+        return `
+            <div class="agst-sys-section-head">
+                <h5>Equipamento</h5>
+                <span class="agst-spacer"></span>
+                <button type="button" class="agst-icon-button" data-sys-action="new-sheet-item" title="Novo item"><i class="fa-solid fa-plus"></i></button>
+            </div>
+            ${this.editingItem === 'new' ? form(null) : ''}
+            <div class="agst-slots">${slots || '<div class="agst-muted">Nenhuma parte do corpo nas regras.</div>'}</div>
+            <h5><i class="fa-solid fa-suitcase"></i> Mochila <span class="agst-muted">${backpack.reduce((total, item) => total + item.quantity, 0)}</span></h5>
+            <div class="agst-item-list">${backpack.map(render).join('') || '<div class="agst-muted agst-list-empty">Mochila vazia.</div>'}</div>`;
+    }
+
+    async saveSheetItem(formElement) {
+        const id = formElement.dataset.itemId;
+        const value = field => formElement.querySelector(`[data-item-field="${field}"]`)?.value ?? '';
+        const input = {
+            name: value('name'),
+            description: value('description'),
+            quantity: value('quantity') || 1,
+            slot: value('slot') || null,
+            bonusTarget: value('bonusTarget') || null,
+            bonusValue: value('bonusValue') || 0,
+        };
+        if (id === 'new') await this.system.editItem(this.selectedId, { action: 'add', ...input });
+        else await this.system.editItem(this.selectedId, { action: 'update', item: id, ...input });
+        this.editingItem = null;
+        await this.render();
+    }
+
     async saveAbility(formElement) {
         const id = formElement.dataset.ability;
         const value = field => formElement.querySelector(`[data-ability-field="${field}"]`)?.value ?? '';
@@ -473,6 +658,7 @@ export class SystemView {
             this.sub = subtab.dataset.sysTab;
             this.editing = null;
             this.editingAbility = null;
+            this.editingItem = null;
             await this.render().catch(error => this.fail(error));
             return;
         }
@@ -551,6 +737,43 @@ export class SystemView {
                     await this.system.updateSheet(this.selectedId, { unlinkLorebook: true });
                     await this.render();
                     break;
+                case 'apply-preset': {
+                    const preset = DICE_PRESETS[button.dataset.preset];
+                    const ok = await confirmDialog(`Usar o modelo "${preset.label.split(':')[0]}"?`,
+                        `${preset.description} O método de rolagem, o valor inicial dos atributos e os bônus dos níveis de treinamento mudam. Os valores já salvos nas fichas não mudam: ajuste os atributos se precisar.`);
+                    if (!ok) return;
+                    await this.system.applyDicePreset(button.dataset.preset);
+                    await this.render();
+                    break;
+                }
+                case 'new-sheet-item':
+                    this.editingItem = 'new';
+                    await this.render();
+                    this.body.querySelector('.agst-item-form [data-item-field="name"]')?.focus();
+                    break;
+                case 'edit-sheet-item':
+                    this.editingItem = button.dataset.itemId;
+                    await this.render();
+                    break;
+                case 'cancel-sheet-item':
+                    this.editingItem = null;
+                    await this.render();
+                    break;
+                case 'save-sheet-item':
+                    await this.saveSheetItem(button.closest('.agst-item-form'));
+                    break;
+                case 'delete-sheet-item': {
+                    const sheet = this.data.sheets.find(s => s.id === this.selectedId);
+                    const entry = sheet?.items.find(i => i.id === button.dataset.itemId);
+                    if (!(await confirmDialog(`Excluir "${entry?.name}"?`, ''))) return;
+                    await this.system.editItem(this.selectedId, { action: 'remove', item: button.dataset.itemId });
+                    await this.render();
+                    break;
+                }
+                case 'item-qty':
+                    await this.system.editItem(this.selectedId, { action: 'update', item: button.dataset.itemId, quantityDelta: Number(button.dataset.delta) });
+                    await this.render();
+                    break;
                 case 'new-ability':
                     this.editingAbility = 'new';
                     await this.render();
@@ -589,7 +812,7 @@ export class SystemView {
         } catch (error) {
             this.fail(error);
             // Com um formulário aberto, mantém o que foi digitado para a pessoa corrigir.
-            if (!this.editing && !this.editingAbility) await this.render().catch(() => undefined);
+            if (!this.editing && !this.editingAbility && !this.editingItem) await this.render().catch(() => undefined);
         }
     }
 
@@ -599,6 +822,14 @@ export class SystemView {
             if (target.matches('[data-role="sheet-select"]')) {
                 this.selectedId = target.value;
                 this.editingAbility = null;
+                this.editingItem = null;
+                await this.render();
+                return;
+            }
+            if (target.dataset.dice) {
+                const key = target.dataset.dice;
+                const numeric = ['fixedCount', 'sides', 'defaultScore'].includes(key);
+                await this.system.setDice({ [key]: numeric ? Number(target.value) : target.value });
                 await this.render();
                 return;
             }
@@ -620,6 +851,7 @@ export class SystemView {
                 'res-current': { resources: [{ id: res, current: value }] },
                 'res-max': { resources: [{ id: res, max: value }] },
                 stat: { stats: [{ id, bonus: value }] },
+                training: { skills: [{ id, training: value || 'none' }] },
             }[field];
             if (!changes) return;
             await this.system.updateSheet(this.selectedId, changes);

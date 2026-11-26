@@ -31,14 +31,15 @@ const ATTRIBUTE_VALUES = {
 };
 const SKILL_VALUES = {
     type: 'array',
-    description: 'Skill bonuses to set. The bonus is added to the attribute modifier (e.g. 2 = trained, 4 = expert, 0 = untrained).',
+    description: 'Skill changes: training level (from system_info "training_levels", or "none") and/or an extra free modifier added on top.',
     items: {
         type: 'object',
         properties: {
             name: { type: 'string', description: 'Skill name (as in system_info).' },
-            bonus: { type: 'integer', description: 'Skill bonus.' },
+            training: { type: 'string', description: 'Training level name, e.g. "Treinado", "Veterano", "Especialista", or "none".' },
+            bonus: { type: 'integer', description: 'Extra free modifier (items, blessings, lasting circumstances).' },
         },
-        required: ['name', 'bonus'],
+        required: ['name'],
     },
 };
 const RESOURCE_VALUES = {
@@ -198,6 +199,17 @@ const ARG_ALIASES = {
         against_stat: ['againstStat', 'defense_stat', 'target_stat'],
         mode: ['roll_mode'],
         bonus: ['modifier', 'situational_bonus', 'extra'],
+        extra_dice: ['extraDice', 'dice_bonus', 'bonus_dice', 'dados_extras'],
+    },
+    sheet_item: {
+        sheet: [...SHEET_ALIASES, 'owner'],
+        item: ['item_name', 'current_name', 'old_name', 'objeto'],
+        name: ['new_name', 'title'],
+        quantity: ['qty', 'amount', 'count', 'quantidade'],
+        quantity_delta: ['delta', 'change', 'consume'],
+        slot: ['equip_slot', 'body_slot', 'location', 'place', 'local', 'parte'],
+        bonus_target: ['bonus_to', 'affects', 'stat'],
+        bonus_value: ['bonus', 'modifier'],
     },
     sheet_ability: {
         sheet: SHEET_ALIASES,
@@ -269,6 +281,18 @@ const ARG_FIXES = {
         // Para editar/remover, o nome atual pode vir em "name".
         if ((input.action === 'update' || input.action === 'remove') && input.ability === undefined && input.name !== undefined) {
             input.ability = input.name;
+            delete input.name;
+        }
+    },
+    sheet_item: input => {
+        const action = foldText(input.action ?? '');
+        if (['give', 'create', 'new', 'adicionar', 'criar', 'pegar', 'loot'].includes(action)) input.action = 'add';
+        else if (['edit', 'change', 'equip', 'unequip', 'move', 'use', 'consume', 'editar', 'equipar', 'desequipar', 'usar'].includes(action)) input.action = 'update';
+        else if (['delete', 'drop', 'discard', 'excluir', 'remover', 'largar'].includes(action)) input.action = 'remove';
+        if (['unequip', 'desequipar'].includes(action) && input.slot === undefined) input.slot = 'mochila';
+        if (typeof input.equip === 'string' && input.slot === undefined) input.slot = input.equip;
+        if ((input.action === 'update' || input.action === 'remove') && input.item === undefined && input.name !== undefined) {
+            input.item = input.name;
             delete input.name;
         }
     },
@@ -626,11 +650,11 @@ export function buildToolDefinitions({ fs, lore, system }) {
         {
             name: 'system_info',
             group: TOOL_GROUPS.system,
-            description: 'Describe the user\'s RPG system: attributes, skills (each tied to an attribute), resources (like Vida/HP and Mana), stats (like Defesa = the DC to hit a character, Iniciativa) and the extra fields of abilities, with the descriptions the user wrote, plus the rules (D&D-style modifiers, d20 checks, no levels or XP). Read it once before working with sheets or checks.',
+            description: 'Describe the user\'s RPG system: the dice method (e.g. 1d20 + modifier, or one d20 per attribute point keeping the highest), attributes, skills (each tied to an attribute) and their training levels, resources (like Vida/HP and Mana), stats (like Defesa = the DC to hit a character, Iniciativa), ability fields and body slots for items, with the descriptions the user wrote. No levels or XP. Read it once before working with sheets or checks.',
             inputSchema: {
                 type: 'object',
                 properties: {
-                    section: { type: 'string', enum: ['all', 'rules', 'attributes', 'skills', 'resources', 'stats', 'abilities'], description: 'Part to return (default "all").' },
+                    section: { type: 'string', enum: ['all', 'rules', 'attributes', 'skills', 'resources', 'stats', 'abilities', 'items'], description: 'Part to return (default "all"). "rules" includes the dice method; "skills" the training levels; "items" the body slots.' },
                 },
             },
             run: args => system.systemInfo({ section: args.section }),
@@ -814,6 +838,7 @@ export function buildToolDefinitions({ fs, lore, system }) {
                     against_stat: { type: 'string', description: 'Use another stat of the target as the DC (default: its defense stat).' },
                     mode: { type: 'string', enum: ['normal', 'advantage', 'disadvantage'], description: 'Default "normal".' },
                     bonus: { type: 'integer', description: 'Situational bonus or penalty (e.g. +2 for good tools, -2 for darkness).' },
+                    extra_dice: { type: 'integer', description: 'Extra dice for this roll (+1 or -1), for dice methods with several dice.' },
                     reason: { type: 'string', description: 'Short description of what is being attempted.' },
                 },
                 required: ['check'],
@@ -825,9 +850,48 @@ export function buildToolDefinitions({ fs, lore, system }) {
                 againstStat: args.against_stat,
                 mode: args.mode ?? 'normal',
                 bonus: args.bonus,
+                extraDice: args.extra_dice,
                 reason: args.reason,
             }),
             summarize: (args, result) => result.summary,
+        },
+        {
+            name: 'sheet_item',
+            group: TOOL_GROUPS.system,
+            description: 'Add, update or remove an item on a sheet (weapons, armor, potions, keys, loot). "slot" equips it on a body part (see system_info section "items") or puts it in the backpack ("mochila"); an item\'s bonus (e.g. +2 Defesa) only counts while it is equipped. Use quantity_delta to consume or gain (e.g. -1 potion; at 0 the item disappears). For "update"/"remove", pass the current name in "item".',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    sheet: SHEET_PARAM,
+                    action: { type: 'string', enum: ['add', 'update', 'remove'], description: 'Default "add" (the same item in the same place stacks the quantity).' },
+                    item: { type: 'string', description: 'Current name of the item to update/remove.' },
+                    name: { type: 'string', description: 'Item name (add) or new name (update).' },
+                    description: { type: 'string', description: 'What it is / does (damage, properties, value).' },
+                    quantity: { type: 'integer', description: 'Exact quantity (default 1 when adding).' },
+                    quantity_delta: { type: 'integer', description: 'Change in quantity, e.g. -1 when a potion is drunk.' },
+                    slot: { type: 'string', description: 'Body slot to equip it on (e.g. "Torso", "Mão principal") or "mochila" for the backpack.' },
+                    bonus_target: { type: 'string', description: 'Stat or skill the item improves while equipped, e.g. "Defesa" or "Pontaria".' },
+                    bonus_value: { type: 'integer', description: 'Size of that bonus, e.g. 2. Use 0 to remove the bonus.' },
+                },
+            },
+            run: (args, context) => system.editItem(args.sheet, {
+                action: args.action ?? 'add',
+                item: args.item,
+                name: args.name,
+                description: args.description,
+                quantity: args.quantity,
+                quantityDelta: args.quantity_delta,
+                slot: args.slot,
+                bonusTarget: args.bonus_target,
+                bonusValue: args.bonus_value,
+                runId: context.runId,
+            }),
+            summarize: (args, result) => {
+                const name = typeof result.item === 'string' ? result.item : result.item?.name;
+                const where = result.item?.location ? ` (${result.item.location === 'backpack' ? 'mochila' : result.item.location})` : '';
+                const verb = { added: 'Deu', stacked: 'Somou', updated: 'Mudou', removed: 'Tirou', used_up: 'Acabou' }[result.action] ?? 'Mudou';
+                return `${verb} o item "${name}"${where} de ${result.sheet}`;
+            },
         },
     ];
 }

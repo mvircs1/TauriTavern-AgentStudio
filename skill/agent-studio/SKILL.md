@@ -1,7 +1,7 @@
 ---
 name: agent-studio
-description: Guia das ferramentas do Agent Studio. Cobre o estúdio de arquivos persistente (studio_*), os lorebooks/World Info (lorebook_*) e o sistema de RPG com fichas, Vida/Mana, Defesa, habilidades e testes de d20 (system_*, sheet_*, ability_use). Leia no começo de qualquer run em que o usuário fale de lore, notas, organizar informações, lorebook, ficha, atributos, perícias, habilidades, magias, dano, cura, combate ou teste de dado.
-version: 0.5.0
+description: Guia das ferramentas do Agent Studio. Cobre o estúdio de arquivos persistente (studio_*), os lorebooks/World Info (lorebook_*) e o sistema de RPG com fichas, Vida/Mana, Defesa, perícias com treinamento, habilidades, itens/equipamento e testes de dados (system_*, sheet_*, ability_use). Leia no começo de qualquer run em que o usuário fale de lore, notas, organizar informações, lorebook, ficha, atributos, perícias, habilidades, magias, itens, equipamento, dano, cura, combate ou teste de dado.
+version: 0.6.0
 author: mvircs1
 tags: [agent-studio, rpg, lorebook, world-info]
 ---
@@ -26,6 +26,7 @@ Depois de usar as ferramentas, escreva a resposta da história normalmente no se
 | Rolar um teste ou um ataque contra a Defesa de alguém | `system_roll` |
 | Usar uma habilidade (gasta custo, rola teste e efeito) | `ability_use` |
 | Dar, editar ou tirar uma habilidade de um personagem | `sheet_ability` |
+| Dar, equipar, guardar, consumir ou tirar itens | `sheet_item` |
 | Causar dano, curar ou gastar mana | `sheet_resource` |
 | Criar um NPC com ficha | `sheet_create` |
 | Mudar atributos, perícias, bônus de Defesa, notas ou vincular a lorebook | `sheet_update` |
@@ -43,14 +44,17 @@ Depois de usar as ferramentas, escreva a resposta da história normalmente no se
 ### As regras
 
 - Não há nível nem XP.
-- **Modificador** = (valor − 10) ÷ 2, arredondado para baixo: 8–9 = −1, 10–11 = +0, 12–13 = +1, 14–15 = +2, 16–17 = +3, 18–19 = +4, 20 = +5.
-- **Perícia** = modificador do atributo dela + bônus da perícia. Use bônus 0 para destreinado, 2 para treinado e 4 para especialista.
-- **Estatísticas** = base + modificador do atributo + bônus da ficha. Por padrão:
+- **O método de rolagem é do usuário e pode variar.** Chame `system_info {"section": "rules"}` uma vez por run e siga o que ele diz. Os mais comuns:
+  - **D&D**: 1d20 + modificador do atributo. Modificador = (valor − 10) ÷ 2: 10–11 = +0, 12–13 = +1, 14–15 = +2. Atributos ficam por volta de 8 a 18.
+  - **Ordem**: rola tantos d20 quanto o valor do atributo e fica com o maior (Destreza 2 = 2d20). O atributo não soma nada; o bônus vem do treinamento. Atributo 0 = 2d20 e fica o menor. Atributos ficam por volta de 0 a 5.
+  - **Direto**: 1d20 + valor do atributo.
+- **Perícia**: além do atributo, tem um **nível de treinamento**, com nomes e bônus do usuário (ex.: Treinado +5, Veterano +10, Especialista +15), e um **modificador extra** livre. A ficha mostra a rolagem pronta, por exemplo `"roll": "2d20+13"`.
+- **Estatísticas** = base + atributo + bônus da ficha + itens equipados. Por padrão:
   - **Defesa** = 10 + Destreza + bônus (armadura, escudo). É a CD para acertar o personagem.
   - **Iniciativa** = Destreza + bônus.
   - **Deslocamento** = 9.
-- **Teste** = d20 + perícia, atributo ou estatística, contra uma dificuldade (CD): 5 muito fácil, 10 fácil, 15 médio, 20 difícil, 25 muito difícil.
-- Os nomes e descrições reais dos atributos, perícias, recursos e estatísticas são os do usuário. Chame `system_info` uma vez por run antes de usar fichas, porque eles podem ter sido renomeados.
+- **Teste** = os dados do método + o total da perícia, atributo ou estatística, contra uma dificuldade (CD): 5 muito fácil, 10 fácil, 15 médio, 20 difícil, 25 muito difícil. Com bônus de treinamento altos (como no Ordem), use CDs mais altas.
+- Os nomes e descrições reais de tudo isso são os do usuário. Chame `system_info` antes de usar fichas, porque eles podem ter sido renomeados.
 
 ### As fichas
 
@@ -166,10 +170,28 @@ Usar a habilidade (`ability_use`). Ela paga o custo, rola o teste contra a Defes
 Mudar valores de uma ficha existente:
 
 ```json
-{ "sheet": "Capitão Voss", "attributes": [{ "name": "Destreza", "score": 12 }], "skills": [{ "name": "Atletismo", "bonus": 2 }] }
+{ "sheet": "Capitão Voss", "attributes": [{ "name": "Destreza", "score": 12 }], "skills": [{ "name": "Atletismo", "training": "Treinado", "bonus": 1 }] }
 ```
 
-Você não pode editar as regras (criar ou renomear atributos, perícias e recursos). Se a história pedir algo que não existe nas regras, sugira ao usuário criar na aba **Sistema** do Agent Studio.
+Use `"training": "none"` para tirar o treinamento de uma perícia.
+
+### Itens e equipamento
+
+Cada ficha tem **equipamento**, com itens vestidos em partes do corpo como Cabeça, Torso e Mão principal (a lista é do usuário, veja `system_info {"section": "items"}`), e uma **mochila**. O bônus de um item (ex.: +3 Defesa, +2 Pontaria) **só vale enquanto ele está equipado**.
+
+Dar um item já equipado (`sheet_item`):
+
+```json
+{ "sheet": "Aria", "name": "Cota de Malha", "slot": "Torso", "bonus_target": "Defesa", "bonus_value": 3, "description": "Armadura média, barulhenta." }
+```
+
+- Para guardar na mochila, use `{"action": "update", "item": "Cota de Malha", "slot": "mochila"}`. Para equipar, use o mesmo com o nome da parte do corpo.
+- Para consumir, use `{"action": "update", "item": "Poção de Cura", "quantity_delta": -1}`. Em 0, o item some.
+- Se você der um item igual no mesmo lugar, a quantidade soma.
+- Para perder ou descartar, use `"action": "remove"`.
+- Quando o personagem pega, compra, ganha, perde, quebra ou usa algo na história, **atualize os itens na hora**.
+
+Você não pode editar as regras (atributos, perícias, níveis de treinamento, partes do corpo, método de rolagem). Se a história pedir algo que não existe, sugira ao usuário criar na aba **Sistema** do Agent Studio.
 
 ## 2. Lorebooks (World Info)
 

@@ -31,7 +31,7 @@ Para receber uma versão nova, use o botão de **atualizar** da extensão em Ext
 
 ## Configuração (uma vez)
 
-1. Em **Extensões**, abra a seção **Agent Studio**. O status deve mostrar "25 de 25 ferramentas registradas no Agent".
+1. Em **Extensões**, abra a seção **Agent Studio**. O status deve mostrar "26 de 26 ferramentas registradas no Agent".
 2. Em **Profile do Agent**, deixe selecionado **Agent Studio Writer (cópia do default-writer)** e toque em **Liberar ferramentas**.
    - O modelo só enxerga as ferramentas que estão liberadas no Profile ativo. O `default-writer` não pode ser editado, por isso o plugin cria uma cópia dele já com as ferramentas.
    - Se você já tem um Profile próprio, escolha ele na lista e libere as ferramentas nele.
@@ -64,8 +64,16 @@ O painel tem cinco abas:
 
 **Regras** (sub-aba *Regras*):
 
+- **Método de rolagem**, com três modelos prontos:
+  - **D&D**: 1d20 + modificador do atributo, (valor − 10) ÷ 2.
+  - **Ordem**: o valor do atributo é o número de d20 rolados, e fica o maior (Força 3 = 3d20). Com atributo 0, rola 2d20 e fica o menor.
+  - **Direto**: 1d20 + o valor do atributo.
+
+  Você também pode personalizar: quantos dados (fixo ou pelo atributo), tipo de dado (d4 a d100), se fica o maior, o menor ou a soma, como o atributo entra no total, e o valor inicial dos atributos.
 - **Atributos**: vêm 5 por padrão (Força, Destreza, Constituição, Inteligência, Carisma). O ✏️ muda nome e descrição, o ➕ cria outro e a 🗑️ exclui.
 - **Perícias**: vêm 8 por padrão. Cada uma fica ligada a um atributo, por exemplo Furtividade → Destreza.
+- **Níveis de treinamento**: nomes e bônus editáveis. O modelo Ordem usa Treinado +5, Veterano +10 e Especialista +15.
+- **Partes do corpo**: onde os itens são equipados. Vêm Cabeça, Torso, Mão principal, Mão secundária, Pernas, Pés e Acessórios, e dá para criar ou tirar.
 - **Recursos**: vêm Vida e Mana, cada um com um máximo padrão. Dá para criar outros, como Estamina ou Sanidade.
 - **Estatísticas**: valores derivados, calculados como base + modificador de um atributo + bônus da ficha. Vêm três:
   - **Defesa** = 10 + Destreza + bônus. É a CD dos ataques contra o personagem.
@@ -77,11 +85,10 @@ O painel tem cinco abas:
 
 A IA lê as descrições, então descreva cada item do jeito que você quer que ele seja usado. Há também um botão para restaurar as regras padrão.
 
-**Contas (no estilo D&D, sem nível):**
+**Contas (sem nível):**
 
-- **Modificador** = (valor − 10) ÷ 2, arredondado para baixo. Na prática: 8–9 = −1, 10–11 = +0, 12–13 = +1, 14–15 = +2, 16–17 = +3, 18–19 = +4, 20 = +5.
-- **Perícia** = modificador do atributo + bônus da perícia. Por exemplo, +2 se o personagem for treinado nela.
-- **Teste** = d20 + perícia, atributo ou estatística, contra uma dificuldade (CD): 10 é fácil, 15 é médio e 20 é difícil. Com vantagem ou desvantagem, rola 2d20 e fica com o maior ou o menor.
+- **Perícia** = os dados do método + o atributo (se o método somar) + o bônus do treinamento + um modificador extra livre + os itens equipados. Por exemplo, no Ordem, Destreza 2 com Pontaria Veterano e modificador 3 dá **2d20+13**.
+- **Teste** = os dados + o total, contra uma dificuldade (CD): 10 é fácil, 15 é médio e 20 é difícil. Vantagem soma um dado e desvantagem tira um.
 - **Ataque** = um teste contra a **Defesa** do alvo.
 
 **Fichas** (sub-aba *Fichas*):
@@ -98,6 +105,11 @@ A IA lê as descrições, então descreva cada item do jeito que você quer que 
   - os campos extras das Regras.
 
   O ➕ cria uma habilidade, o ✏️ edita e a 🪄 usa: paga o custo e rola o teste e o efeito. A IA usa as habilidades com `ability_use`, que também pode aplicar o dano ou a cura direto na ficha do alvo.
+- **Perícias na ficha**: cada linha tem o seletor de treinamento, uma caixa de modificador extra e a rolagem pronta, por exemplo `[DES] Pontaria — Veterano — [3] — 2d20+13`.
+- **Equipamento e mochila**:
+  - Cada parte do corpo mostra o que está equipado. O resto fica na mochila.
+  - Um item tem nome, quantidade, descrição e um bônus opcional numa estatística ou perícia, por exemplo colete +2 Defesa. O bônus só vale enquanto o item está equipado.
+  - O ➕ cria um item, o ✏️ edita ou muda de lugar, e os botões − e + gastam ou somam a quantidade.
 
 ## Ferramentas que o Agent recebe
 
@@ -125,6 +137,7 @@ A IA lê as descrições, então descreva cada item do jeito que você quer que 
 | `sheet_update` | Muda valores, bônus de estatística, notas e nome, ou vincula e desvincula a ficha de um lorebook |
 | `sheet_resource` | Dano, cura ou gasto de Vida, Mana etc. |
 | `sheet_ability` | Cria, edita ou remove uma habilidade de uma ficha |
+| `sheet_item` | Dá, equipa, guarda na mochila, consome ou remove itens |
 | `ability_use` | Usa uma habilidade: paga o custo, rola o teste contra a Defesa do alvo e rola o efeito, podendo aplicar dano ou cura |
 | `sheet_delete` | Exclui a ficha de um NPC |
 | `system_roll` | Teste de d20 + modificador contra uma CD ou contra a Defesa de outra ficha, com vantagem ou desvantagem |
@@ -150,7 +163,7 @@ Os lorebooks continuam sendo os arquivos normais do SillyTavern. O plugin só us
 
 ## Desenvolvimento
 
-- `node --test dev/core.test.mjs dev/system.test.mjs dev/skill.test.mjs dev/robust-undo.test.mjs dev/abilities.test.mjs` roda os testes da lógica: estúdio, lorebooks, backups, registro das ferramentas, sistema de RPG e Skill. Eles usam simulações do SillyTavern e da API do TauriTavern 2.4.0.
+- `node --test dev/core.test.mjs dev/system.test.mjs dev/skill.test.mjs dev/robust-undo.test.mjs dev/abilities.test.mjs dev/dice-items.test.mjs` roda os testes da lógica: estúdio, lorebooks, backups, registro das ferramentas, sistema de RPG e Skill. Eles usam simulações do SillyTavern e da API do TauriTavern 2.4.0.
 - Ao mudar ferramentas, atualize o `skill/agent-studio/SKILL.md` e a `version` dele. O teste da Skill falha se alguma ferramenta não estiver citada lá.
 - `dev/harness.html` é uma página de teste da interface fora do app. Para usar, sirva a pasta do projeto (por exemplo `python -m http.server`) e abra `/dev/harness.html`.
 - `docs/` guarda as anotações da pesquisa sobre o TauriTavern e o modo Agent.

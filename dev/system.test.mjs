@@ -210,7 +210,7 @@ describe('sistema de RPG (SystemService)', () => {
         const profile = agent.profiles.get(STUDIO_PROFILE_ID);
         profile.tools.allow = profile.tools.allow.filter(id => !id.includes(':sheet_') && !id.includes(':system_'));
         const synced = await bridge.syncStudioProfile();
-        assert.equal(synced.added, 9);
+        assert.equal(synced.added, 10);
         assert.equal(await bridge.syncStudioProfile(), null, 'nada a fazer na segunda vez');
     });
 });

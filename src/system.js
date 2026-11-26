@@ -8,6 +8,17 @@
 // - Fichas de NPC vinculadas a uma entrada de lorebook: no armazenamento do plugin, visíveis
 //   em todo chat onde aquele lorebook estiver ativo.
 
+import {
+    attributeRollBonus,
+    attributeStatBonus,
+    DEFAULT_DICE,
+    describeMethod,
+    DICE_PRESETS,
+    diceCount,
+    formatRoll,
+    normalizeDice,
+    rollPool,
+} from './dice.js';
 import { createSerialQueue, generateId, LOG_PREFIX } from './util.js';
 
 const META_TABLE = 'meta';
@@ -30,8 +41,11 @@ export const KINDS = Object.freeze({
     resources: 'resources',
     stats: 'stats',
     abilityFields: 'abilityFields',
+    trainingLevels: 'trainingLevels',
+    slots: 'slots',
 });
 
+const MAX_ITEMS = 200;
 const MAX_ABILITIES = 60;
 const MAX_FIELD_VALUE = 500;
 const MAX_EFFECT = 300;
@@ -72,15 +86,40 @@ export const DEFAULT_SYSTEM = Object.freeze({
         { id: 'duracao', name: 'Duração', description: 'Quanto tempo o efeito dura (instantâneo, 1 minuto, até o fim da cena...).' },
         { id: 'recarga', name: 'Recarga', description: 'Com que frequência pode ser usada (à vontade, 1x por cena, 1x por descanso...).' },
     ],
+    // Como os testes são rolados (ver dice.js). O padrão é o D&D.
+    dice: { ...DEFAULT_DICE },
+    // Níveis de treinamento das perícias (nome e bônus editáveis).
+    trainingLevels: [
+        { id: 'treinado', name: 'Treinado', description: '', bonus: 2 },
+        { id: 'veterano', name: 'Veterano', description: '', bonus: 4 },
+        { id: 'especialista', name: 'Especialista', description: '', bonus: 6 },
+    ],
+    // Partes do corpo onde itens podem ser equipados (o resto fica na mochila).
+    slots: [
+        { id: 'cabeca', name: 'Cabeça', description: 'Chapéus, elmos, máscaras, óculos.' },
+        { id: 'torso', name: 'Torso', description: 'Armaduras, roupas, capas.' },
+        { id: 'mao-principal', name: 'Mão principal', description: 'Arma ou ferramenta principal.' },
+        { id: 'mao-secundaria', name: 'Mão secundária', description: 'Escudo, segunda arma, tocha, foco mágico.' },
+        { id: 'pernas', name: 'Pernas', description: 'Calças, grevas.' },
+        { id: 'pes', name: 'Pés', description: 'Botas, sapatos.' },
+        { id: 'acessorios', name: 'Acessórios', description: 'Anéis, amuletos, cintos, brincos.' },
+    ],
 });
 
-export const RULES_TEXT = 'Modifier = floor((score - 10) / 2): 8-9 = -1, 10-11 = +0, 12-13 = +1, 14-15 = +2, 16-17 = +3, 18-19 = +4, 20 = +5. '
-    + 'Skill total = modifier of its attribute + the skill bonus. '
-    + 'Stats (like Defesa/Defense, Iniciativa) = base + modifier of their attribute + the sheet bonus (armor, items). '
-    + 'A check is d20 + total (+ situational bonus) against a difficulty class (DC): 5 very easy, 10 easy, 15 medium, 20 hard, 25 very hard, 30 nearly impossible. '
-    + 'An attack is a check against the target\'s defense stat (system_roll or ability_use with "against"/"target"). '
-    + 'Abilities (spells, powers, techniques) live on each sheet: cost (e.g. 3 Mana), check used to hit, effect (dice like "2d6+FOR" or text) and extra fields. '
-    + 'There are no levels or XP.';
+/** Regras em texto para a IA, de acordo com o método de rolagem atual. */
+export function rulesText(definition) {
+    const dice = definition.dice;
+    const statAttribute = dice.attributeBonus === 'modifier' ? 'modifier' : 'value';
+    return `${describeMethod(dice)} `
+        + 'Skills: each has an attribute, an optional training level (bonus) and an extra free modifier. '
+        + `Stats (like Defesa/Defense, Iniciativa) = base + attribute ${statAttribute} + sheet bonus + bonuses of equipped items. `
+        + 'Difficulty classes (DC): 5 very easy, 10 easy, 15 medium, 20 hard, 25 very hard, 30 nearly impossible'
+        + (dice.countMode === 'attribute' || dice.attributeBonus === 'none' ? ' (with big training bonuses, raise DCs accordingly)' : '')
+        + '. An attack is a check against the target\'s defense stat (system_roll "against" or ability_use "target"). '
+        + 'Abilities (spells, powers, techniques) live on each sheet: cost, check used to hit, effect (dice like "2d6+FOR" or text) and extra fields. '
+        + 'Items live on each sheet: equipped on a body slot (their bonus counts) or in the backpack (bonus does not count). '
+        + 'There are no levels or XP.';
+}
 
 /** Normaliza para comparar nomes: minúsculas, sem acentos e sem espaços nas pontas. */
 export function normalizeName(value) {
@@ -134,6 +173,26 @@ function normalizeDefinition(stored) {
             }))
             : base.stats,
         abilityFields: Array.isArray(stored.abilityFields) ? clean(stored.abilityFields, () => ({})) : base.abilityFields,
+        // Regras salvas antes da versão 0.6 não têm método de rolagem, treinamento nem partes do corpo.
+        dice: normalizeDice(stored.dice),
+        trainingLevels: Array.isArray(stored.trainingLevels)
+            ? clean(stored.trainingLevels, item => ({ bonus: Number.isFinite(item.bonus) ? item.bonus : 0 }))
+            : base.trainingLevels,
+        slots: Array.isArray(stored.slots) ? clean(stored.slots, () => ({})) : base.slots,
+    };
+}
+
+function normalizeItem(item) {
+    const bonus = item?.bonus && item.bonus.target && Number.isFinite(Number(item.bonus.value)) && Number(item.bonus.value) !== 0
+        ? { target: String(item.bonus.target), value: Math.trunc(Number(item.bonus.value)) }
+        : null;
+    return {
+        id: String(item?.id ?? generateId('i')),
+        name: String(item?.name ?? 'Item'),
+        description: String(item?.description ?? ''),
+        quantity: Number.isFinite(Number(item?.quantity)) ? Math.max(0, Math.trunc(Number(item.quantity))) : 1,
+        slot: item?.slot ? String(item.slot) : null,
+        bonus,
     };
 }
 
@@ -162,7 +221,9 @@ function normalizeSheet(sheet) {
         skills: sheet.skills && typeof sheet.skills === 'object' ? { ...sheet.skills } : {},
         resources: sheet.resources && typeof sheet.resources === 'object' ? structuredClone(sheet.resources) : {},
         stats: sheet.stats && typeof sheet.stats === 'object' ? { ...sheet.stats } : {},
+        training: sheet.training && typeof sheet.training === 'object' ? { ...sheet.training } : {},
         abilities: Array.isArray(sheet.abilities) ? sheet.abilities.map(normalizeAbility) : [],
+        items: Array.isArray(sheet.items) ? sheet.items.map(normalizeItem) : [],
         link: sheet.link && typeof sheet.link.book === 'string' ? { ...sheet.link } : null,
         updatedAt: sheet.updatedAt ?? null,
     };
@@ -241,13 +302,23 @@ export function rollExpression(expression, view, rollDie) {
         const attribute = view.attributes.find(a => normalizeName(a.name) === wanted || abbreviation(a.name) === term.toUpperCase());
         const skill = attribute ? null : view.skills.find(s => normalizeName(s.name) === wanted);
         const stat = attribute || skill ? null : view.stats.find(s => normalizeName(s.name) === wanted);
-        const value = attribute?.modifier ?? skill?.total ?? stat?.total;
+        // No D&D o atributo entra como modificador; nos outros métodos, como o próprio valor.
+        const value = attribute ? (attribute.termValue ?? attribute.modifier) : (skill?.total ?? stat?.total);
         if (value === undefined) return null;
         total += sign * value;
         parts.push(`${sign < 0 ? '-' : parts.length ? '+' : ''}${term} (${formatModifier(value)})`);
     }
     if (!hasDice && terms.length === 1 && !/^\d+$/.test(terms[0].replace(/^[+-]/, ''))) return null;
     return { total: Math.max(0, total), detail: `${parts.join(' ')} = ${Math.max(0, total)}` };
+}
+
+/** Item no formato compacto que a IA recebe. */
+function itemToolView(item) {
+    const result = { name: item.name };
+    if (item.quantity !== 1) result.quantity = item.quantity;
+    if (item.description) result.description = item.description;
+    if (item.bonus) result.bonus = `${formatModifier(item.bonus.value)} ${item.bonus.targetName}`;
+    return result;
 }
 
 /** Habilidade no formato compacto que a IA recebe. */
@@ -351,7 +422,7 @@ export class SystemService {
     requireItem(kind, reference) {
         const item = this.findItem(kind, reference);
         if (item) return item;
-        const label = { attributes: 'attribute', skills: 'skill', resources: 'resource', stats: 'stat', abilityFields: 'ability field' }[kind];
+        const label = { attributes: 'attribute', skills: 'skill', resources: 'resource', stats: 'stat', abilityFields: 'ability field', trainingLevels: 'training level', slots: 'body slot' }[kind];
         throw new Error(`Unknown ${label} "${reference}". Valid: ${this.definition[kind].map(i => i.name).join(', ')}.`);
     }
 
@@ -379,6 +450,9 @@ export class SystemService {
             }
             if (kind === KINDS.resources) {
                 item.defaultMax = toInt(input?.defaultMax ?? 10, 'máximo padrão', RESOURCE_RANGE);
+            }
+            if (kind === KINDS.trainingLevels) {
+                item.bonus = toInt(input?.bonus ?? 0, 'bônus', { min: -100, max: 1000 });
             }
             if (kind === KINDS.stats) {
                 const attribute = input?.attribute ? this.definition.attributes.find(a => a.id === input.attribute) : null;
@@ -414,6 +488,41 @@ export class SystemService {
             }
             await this.saveDefinition();
             this.emit({ type: 'definition' });
+        });
+    }
+
+    /** Muda campos do método de rolagem (vira "personalizado" se não bater com um modelo). */
+    setDice(changes) {
+        return this.run(async () => {
+            const merged = normalizeDice({ ...this.definition.dice, ...changes, preset: 'custom' });
+            const preset = Object.entries(DICE_PRESETS).find(([, value]) => Object.entries(value.dice).every(([key, val]) => merged[key] === val));
+            merged.preset = preset ? preset[0] : 'custom';
+            this.definition.dice = merged;
+            if (changes.defaultScore !== undefined) {
+                this.definition.defaultScore = toInt(changes.defaultScore, 'valor inicial dos atributos', SCORE_RANGE);
+            }
+            await this.saveDefinition();
+            this.emit({ type: 'definition' });
+            return { dice: { ...merged }, defaultScore: this.definition.defaultScore };
+        });
+    }
+
+    /** Aplica um modelo (D&D, Ordem, Direto): método, valor inicial dos atributos e bônus de treinamento. */
+    applyDicePreset(presetId) {
+        return this.run(async () => {
+            const preset = DICE_PRESETS[presetId];
+            if (!preset) throw new Error('Modelo desconhecido.');
+            this.definition.dice = { preset: presetId, ...preset.dice };
+            this.definition.defaultScore = preset.defaultScore;
+            const names = ['Treinado', 'Veterano', 'Especialista'];
+            preset.training.forEach((bonus, index) => {
+                const level = this.definition.trainingLevels[index];
+                if (level) level.bonus = bonus;
+                else this.definition.trainingLevels.push({ id: this.uniqueId(this.definition.trainingLevels, names[index]), name: names[index], description: '', bonus });
+            });
+            await this.saveDefinition();
+            this.emit({ type: 'definition' });
+            return structuredClone(this.definition);
         });
     }
 
@@ -464,7 +573,9 @@ export class SystemService {
             skills: {},
             resources: {},
             stats: {},
+            training: {},
             abilities: [],
+            items: [],
             link: null,
             updatedAt: new Date().toISOString(),
         };
@@ -574,16 +685,54 @@ export class SystemService {
 
     view(item) {
         const definition = this.definition;
+        const dice = definition.dice;
         const sheet = item.sheet;
+
+        // Itens equipados (numa parte do corpo que ainda existe nas regras) dão bônus.
+        const slotIds = new Set(definition.slots.map(slot => slot.id));
+        const equipped = (sheet.items ?? []).filter(entry => entry.slot && slotIds.has(entry.slot));
+        const itemBonus = targetId => equipped
+            .filter(entry => entry.bonus?.target === targetId)
+            .reduce((total, entry) => total + entry.bonus.value, 0);
+
         const attributes = definition.attributes.map(attribute => {
             const score = Number.isFinite(sheet.attributes[attribute.id]) ? sheet.attributes[attribute.id] : definition.defaultScore;
-            return { id: attribute.id, name: attribute.name, score, modifier: modifier(score) };
+            const count = diceCount(dice, score);
+            const rollBonus = attributeRollBonus(dice, score);
+            return {
+                id: attribute.id,
+                name: attribute.name,
+                score,
+                modifier: modifier(score),
+                rollBonus,
+                termValue: attributeStatBonus(dice, score),
+                diceCount: count,
+                roll: formatRoll(dice, count, rollBonus),
+            };
         });
         const byId = new Map(attributes.map(attribute => [attribute.id, attribute]));
+        const levels = new Map(definition.trainingLevels.map(level => [level.id, level]));
         const skills = definition.skills.map(skill => {
             const bonus = Number.isFinite(sheet.skills[skill.id]) ? sheet.skills[skill.id] : 0;
+            const level = levels.get(sheet.training?.[skill.id]) ?? null;
             const attribute = byId.get(skill.attribute) ?? null;
-            return { id: skill.id, name: skill.name, attribute: attribute?.name ?? null, attributeId: attribute?.id ?? null, bonus, total: (attribute?.modifier ?? 0) + bonus };
+            const items = itemBonus(skill.id);
+            const total = (attribute?.rollBonus ?? 0) + (level?.bonus ?? 0) + bonus + items;
+            const count = attribute ? attribute.diceCount : dice.fixedCount;
+            return {
+                id: skill.id,
+                name: skill.name,
+                attribute: attribute?.name ?? null,
+                attributeId: attribute?.id ?? null,
+                training: level?.id ?? null,
+                trainingName: level?.name ?? null,
+                trainingBonus: level?.bonus ?? 0,
+                bonus,
+                itemBonus: items,
+                total,
+                diceCount: count,
+                roll: formatRoll(dice, count, total),
+            };
         });
         const resources = definition.resources.map(resource => {
             const value = sheet.resources[resource.id] ?? { current: resource.defaultMax, max: resource.defaultMax };
@@ -592,6 +741,7 @@ export class SystemService {
         const stats = definition.stats.map(stat => {
             const bonus = Number.isFinite(sheet.stats?.[stat.id]) ? sheet.stats[stat.id] : 0;
             const attribute = byId.get(stat.attribute) ?? null;
+            const items = itemBonus(stat.id);
             return {
                 id: stat.id,
                 name: stat.name,
@@ -599,7 +749,11 @@ export class SystemService {
                 attribute: attribute?.name ?? null,
                 attributeId: attribute?.id ?? null,
                 bonus,
-                total: stat.base + (attribute?.modifier ?? 0) + bonus,
+                itemBonus: items,
+                total: stat.base + (attribute?.termValue ?? 0) + bonus + items,
+                // Ao rolar uma estatística (ex.: Iniciativa), o atributo define os dados no método "Ordem".
+                rollBonus: stat.base + (attribute?.rollBonus ?? 0) + bonus + items,
+                diceCount: attribute ? attribute.diceCount : dice.fixedCount,
                 defense: stat.defense === true,
             };
         });
@@ -618,6 +772,19 @@ export class SystemService {
             fields: definition.abilityFields
                 .map(field => ({ id: field.id, name: field.name, value: ability.fields?.[field.id] ?? '' })),
         }));
+        const targetName = id => checkName(id) ?? id;
+        const items = (sheet.items ?? []).map(entry => {
+            const slot = entry.slot && slotIds.has(entry.slot) ? definition.slots.find(s => s.id === entry.slot) : null;
+            return {
+                id: entry.id,
+                name: entry.name,
+                description: entry.description,
+                quantity: entry.quantity,
+                slot: slot?.id ?? null,
+                slotName: slot?.name ?? null,
+                bonus: entry.bonus ? { target: entry.bonus.target, targetName: targetName(entry.bonus.target), value: entry.bonus.value } : null,
+            };
+        });
         return {
             id: sheet.id,
             name: sheet.name,
@@ -630,12 +797,14 @@ export class SystemService {
             resources,
             stats,
             abilities,
+            items,
             updatedAt: sheet.updatedAt,
         };
     }
 
     toolView(item) {
         const view = this.view(item);
+        const dnd = this.definition.dice.attributeBonus === 'modifier';
         const result = {
             id: view.id,
             name: view.name,
@@ -644,13 +813,29 @@ export class SystemService {
             resources: view.resources.map(r => ({ name: r.name, current: r.current, max: r.max })),
             stats: view.stats.map(s => {
                 const stat = { name: s.name, total: s.total, bonus: s.bonus };
+                if (s.itemBonus) stat.from_items = s.itemBonus;
                 if (s.defense) stat.is_defense = true;
                 return stat;
             }),
-            attributes: view.attributes.map(a => ({ name: a.name, score: a.score, mod: formatModifier(a.modifier) })),
-            skills: view.skills.map(s => ({ name: s.name, attribute: s.attribute, bonus: s.bonus, total: formatModifier(s.total) })),
+            attributes: view.attributes.map(a => (dnd
+                ? { name: a.name, score: a.score, mod: formatModifier(a.modifier) }
+                : { name: a.name, score: a.score, roll: a.roll })),
+            skills: view.skills.map(s => {
+                const skill = { name: s.name, attribute: s.attribute, roll: s.roll };
+                if (s.trainingName) skill.training = `${s.trainingName} (${formatModifier(s.trainingBonus)})`;
+                if (s.bonus) skill.extra_modifier = s.bonus;
+                if (s.itemBonus) skill.from_items = s.itemBonus;
+                return skill;
+            }),
             abilities: view.abilities.map(abilityToolView),
+            equipment: {},
+            backpack: [],
         };
+        for (const slot of this.definition.slots) {
+            const worn = view.items.filter(entry => entry.slot === slot.id).map(itemToolView);
+            if (worn.length) result.equipment[slot.name] = worn;
+        }
+        result.backpack = view.items.filter(entry => !entry.slot).map(itemToolView);
         if (view.link) result.linked_lorebook_entry = view.link;
         if (view.notes) result.notes = view.notes;
         return result;
@@ -659,29 +844,33 @@ export class SystemService {
     systemInfo({ section = 'all' } = {}) {
         return this.run(() => {
             const wants = part => !section || section === 'all' || section === part;
+            const definition = this.definition;
             const result = {};
             if (wants('rules')) {
-                result.rules = RULES_TEXT;
-                result.default_score = this.definition.defaultScore;
+                result.rules = rulesText(definition);
+                result.dice_method = { ...definition.dice };
+                result.default_score = definition.defaultScore;
             }
             if (wants('attributes')) {
-                result.attributes = this.definition.attributes.map(a => ({ name: a.name, description: a.description }));
+                result.attributes = definition.attributes.map(a => ({ name: a.name, description: a.description }));
             }
             if (wants('skills')) {
-                result.skills = this.definition.skills.map(s => ({
+                result.skills = definition.skills.map(s => ({
                     name: s.name,
-                    attribute: this.definition.attributes.find(a => a.id === s.attribute)?.name ?? null,
+                    attribute: definition.attributes.find(a => a.id === s.attribute)?.name ?? null,
                     description: s.description,
                 }));
+                result.training_levels = definition.trainingLevels.map(level => ({ name: level.name, bonus: level.bonus }));
             }
             if (wants('resources')) {
-                result.resources = this.definition.resources.map(r => ({ name: r.name, description: r.description, default_max: r.defaultMax }));
+                result.resources = definition.resources.map(r => ({ name: r.name, description: r.description, default_max: r.defaultMax }));
             }
             if (wants('stats')) {
-                result.stats = this.definition.stats.map(s => {
+                const statAttribute = definition.dice.attributeBonus === 'modifier' ? 'modifier' : 'value';
+                result.stats = definition.stats.map(s => {
                     const stat = {
                         name: s.name,
-                        formula: `${s.base}${s.attribute ? ` + ${this.definition.attributes.find(a => a.id === s.attribute)?.name ?? '?'} modifier` : ''} + sheet bonus`,
+                        formula: `${s.base}${s.attribute ? ` + ${definition.attributes.find(a => a.id === s.attribute)?.name ?? '?'} ${statAttribute}` : ''} + sheet bonus + equipped items`,
                         description: s.description,
                     };
                     if (s.defense) stat.is_defense = true;
@@ -689,7 +878,10 @@ export class SystemService {
                 });
             }
             if (wants('abilities')) {
-                result.ability_fields = this.definition.abilityFields.map(f => ({ name: f.name, description: f.description }));
+                result.ability_fields = definition.abilityFields.map(f => ({ name: f.name, description: f.description }));
+            }
+            if (wants('items')) {
+                result.body_slots = definition.slots.map(slot => ({ name: slot.name, description: slot.description }));
             }
             return result;
         });
@@ -763,7 +955,19 @@ export class SystemService {
         }
         for (const change of toChangeList(skills)) {
             const skill = this.requireItem(KINDS.skills, change.name ?? change.id);
-            sheet.skills[skill.id] = toInt(change.bonus ?? change.value, `${skill.name} bonus`, BONUS_RANGE);
+            const extra = change.bonus ?? change.value;
+            if (extra !== undefined && extra !== null && extra !== '') {
+                sheet.skills[skill.id] = toInt(extra, `${skill.name} bonus`, BONUS_RANGE);
+            }
+            if (change.training !== undefined) {
+                sheet.training = sheet.training ?? {};
+                const wanted = change.training === null ? '' : normalizeName(change.training);
+                if (!wanted || ['none', 'nenhum', 'destreinado', 'untrained', '0'].includes(wanted)) {
+                    delete sheet.training[skill.id];
+                } else {
+                    sheet.training[skill.id] = this.requireItem(KINDS.trainingLevels, change.training).id;
+                }
+            }
         }
         for (const change of toChangeList(resources)) {
             const resource = this.requireItem(KINDS.resources, change.name ?? change.id);
@@ -1002,10 +1206,10 @@ export class SystemService {
     }
 
     /**
-     * Rola d20 + modificador de uma perícia, atributo ou estatística, contra uma CD ou contra a Defesa
-     * de outra ficha. Não grava nada.
+     * Rola um teste de perícia, atributo ou estatística conforme o método de rolagem das regras,
+     * contra uma CD ou contra a Defesa de outra ficha. Não grava nada.
      */
-    async performCheck(view, { check, dc, against, againstStat, mode = 'normal', bonus = 0, scope }) {
+    async performCheck(view, { check, dc, against, againstStat, mode = 'normal', bonus = 0, extraDice = 0, scope }) {
         const wanted = String(check ?? '').normalize('NFC').trim();
         if (!wanted) throw new Error('"check" is required (a skill, attribute or stat name).');
         const skill = findByName(view.skills, wanted);
@@ -1015,14 +1219,19 @@ export class SystemService {
             const names = [...view.skills, ...view.attributes, ...view.stats].map(item => item.name).join(', ');
             throw new Error(`Unknown check "${wanted}". Use a skill, attribute or stat: ${names}.`);
         }
+        const dice = this.definition.dice;
         const rollMode = ['advantage', 'disadvantage'].includes(mode) ? mode : 'normal';
         const situational = toInt(bonus ?? 0, 'bonus', BONUS_RANGE);
-        const mod = skill ? skill.total : attribute ? attribute.modifier : stat.total;
-        const rolls = rollMode === 'normal' ? [this.d20()] : [this.d20(), this.d20()];
-        const kept = rollMode === 'advantage' ? Math.max(...rolls) : rollMode === 'disadvantage' ? Math.min(...rolls) : rolls[0];
-        const total = kept + mod + situational;
+        const flat = skill ? skill.total : attribute ? attribute.rollBonus : stat.rollBonus;
+        const count = (skill ?? attribute ?? stat).diceCount;
+        const pool = rollPool(dice, count, {
+            mode: rollMode,
+            extraDice: toInt(extraDice ?? 0, 'extra_dice', { min: -10, max: 10 }),
+            rollDie: sides => this.die(sides),
+        });
+        const total = pool.result + flat + situational;
 
-        let target = dc === undefined || dc === null || dc === '' ? null : toInt(dc, 'dc', { min: 0, max: 100 });
+        let target = dc === undefined || dc === null || dc === '' ? null : toInt(dc, 'dc', { min: 0, max: 1000 });
         let defense = null;
         if (target === null && against) {
             const opponent = await this.resolve(against, scope);
@@ -1037,9 +1246,10 @@ export class SystemService {
             check: (skill ?? attribute ?? stat).name,
             type: skill ? 'skill' : attribute ? 'attribute' : 'stat',
             mode: rollMode,
-            rolls,
-            d20: kept,
-            modifier: formatModifier(mod),
+            dice: pool.label,
+            rolls: pool.rolls,
+            d20: pool.result,
+            modifier: formatModifier(flat),
             total,
         };
         if (situational) result.situational_bonus = formatModifier(situational);
@@ -1048,10 +1258,15 @@ export class SystemService {
             result.success = total >= target;
         }
         if (defense) result.against = defense;
-        if (kept === 20) result.natural = 20;
-        if (kept === 1) result.natural = 1;
+        if (pool.keep !== 'sum' && dice.sides === 20) {
+            if (pool.result === 20) result.natural = 20;
+            if (pool.result === 1) result.natural = 1;
+        }
 
-        const parts = [`d20 ${kept}${rolls.length > 1 ? ` (${rolls.join(' / ')})` : ''}`, formatModifier(mod)];
+        const rolled = pool.rolls.length === 1 && pool.keep !== 'sum'
+            ? `d${dice.sides} ${pool.result}`
+            : `${pool.label} [${pool.rolls.join(', ')}] → ${pool.result}`;
+        const parts = [rolled, formatModifier(flat)];
         if (situational) parts.push(formatModifier(situational));
         const versus = defense ? ` vs ${defense.stat} ${target} de ${defense.sheet}` : target !== null ? ` vs CD ${target}` : '';
         result.summary = `${result.check} de ${view.name}: ${parts.join(' ')} = ${total}`
@@ -1060,14 +1275,115 @@ export class SystemService {
         return result;
     }
 
-    roll(reference, { check, dc, against, againstStat, mode = 'normal', bonus = 0, reason } = {}) {
+    roll(reference, { check, dc, against, againstStat, mode = 'normal', bonus = 0, extraDice = 0, reason } = {}) {
         return this.run(async () => {
             const scope = this.scope();
             const item = await this.resolve(reference, scope);
-            const result = await this.performCheck(this.view(item), { check, dc, against, againstStat, mode, bonus, scope });
+            const result = await this.performCheck(this.view(item), { check, dc, against, againstStat, mode, bonus, extraDice, scope });
             if (reason) result.reason = String(reason).slice(0, 200);
             this.emit({ type: 'roll', result });
             return result;
+        });
+    }
+
+    // ---------- itens ----------
+
+    /** Monta/valida um item a partir do que veio da IA ou da interface. */
+    buildItem(base, input) {
+        const entry = normalizeItem(base ?? {});
+        if (input.name !== undefined && input.name !== null) {
+            const name = String(input.name).normalize('NFC').trim();
+            if (!name) throw new Error('Item name cannot be empty.');
+            entry.name = name.slice(0, MAX_NAME);
+        }
+        if (input.description !== undefined && input.description !== null) {
+            entry.description = String(input.description).normalize('NFC').slice(0, MAX_DESCRIPTION);
+        }
+        if (input.quantity !== undefined && input.quantity !== null && input.quantity !== '') {
+            entry.quantity = toInt(input.quantity, 'quantity', { min: 0, max: 1_000_000 });
+        }
+        if (input.slot !== undefined) {
+            const wanted = input.slot === null ? '' : normalizeName(input.slot);
+            if (!wanted || ['mochila', 'backpack', 'bag', 'inventario', 'inventory', 'none', 'nenhum', 'bolsa'].includes(wanted)) {
+                entry.slot = null;
+            } else {
+                entry.slot = this.requireItem(KINDS.slots, input.slot).id;
+            }
+        }
+        if (input.bonusTarget !== undefined || input.bonusValue !== undefined) {
+            const value = input.bonusValue === undefined || input.bonusValue === null || input.bonusValue === ''
+                ? (entry.bonus?.value ?? 0)
+                : toInt(input.bonusValue, 'bonus_value', BONUS_RANGE);
+            const targetRef = input.bonusTarget === undefined ? entry.bonus?.target : input.bonusTarget;
+            if (!value || !targetRef) {
+                entry.bonus = null;
+            } else {
+                const target = findByName(this.definition.stats, targetRef) ?? findByName(this.definition.skills, targetRef);
+                if (!target) {
+                    const names = [...this.definition.stats, ...this.definition.skills].map(item => item.name).join(', ');
+                    throw new Error(`Item bonuses can target a stat or skill: ${names}. Unknown: "${targetRef}".`);
+                }
+                entry.bonus = { target: target.id, value };
+            }
+        }
+        return entry;
+    }
+
+    /**
+     * Cria, edita ou remove um item de uma ficha. `slot` equipa numa parte do corpo (ou "mochila");
+     * `quantityDelta` soma/subtrai (chegando a 0, o item some).
+     * @param {'add'|'update'|'remove'} action
+     */
+    editItem(reference, { action = 'add', item: itemRef, quantityDelta, runId, ...input } = {}) {
+        return this.run(async () => {
+            const scope = this.scope();
+            const sheetItem = await this.resolve(reference, scope);
+            const items = sheetItem.sheet.items ?? [];
+            const op = ['add', 'update', 'remove'].includes(action) ? action : 'add';
+            const finish = async nextItems => {
+                await this.captureSheet(runId, sheetItem, scope);
+                sheetItem.sheet.items = nextItems;
+                await this.persist(sheetItem, scope);
+            };
+            const describeEntry = id => {
+                const viewItem = this.view(sheetItem).items.find(entry => entry.id === id);
+                return viewItem ? { ...itemToolView(viewItem), location: viewItem.slotName ?? 'backpack' } : null;
+            };
+
+            if (op === 'add') {
+                if (!input.name) throw new Error('"name" is required to add an item.');
+                // Mesmo nome, mesmo lugar e sem bônus diferente: soma a quantidade (ex.: poções).
+                const entry = this.buildItem(null, { quantity: 1, ...input });
+                const stack = items.find(existing => normalizeName(existing.name) === normalizeName(entry.name)
+                    && existing.slot === entry.slot && JSON.stringify(existing.bonus) === JSON.stringify(entry.bonus));
+                if (stack) {
+                    const merged = { ...stack, quantity: stack.quantity + entry.quantity };
+                    await finish(items.map(existing => (existing.id === stack.id ? merged : existing)));
+                    return { sheet: sheetItem.sheet.name, action: 'stacked', item: describeEntry(stack.id) };
+                }
+                if (items.length >= MAX_ITEMS) throw new Error(`A sheet can have at most ${MAX_ITEMS} items.`);
+                await finish([...items, entry]);
+                return { sheet: sheetItem.sheet.name, action: 'added', item: describeEntry(entry.id) };
+            }
+
+            const current = findByName(items, itemRef ?? input.name);
+            if (!current) {
+                throw new Error(`Item "${itemRef ?? input.name}" not found on ${sheetItem.sheet.name}. Items: ${items.map(entry => entry.name).join(', ') || 'none'}.`);
+            }
+            if (op === 'remove') {
+                await finish(items.filter(entry => entry.id !== current.id));
+                return { sheet: sheetItem.sheet.name, action: 'removed', item: current.name };
+            }
+            const updated = this.buildItem(current, input);
+            if (quantityDelta !== undefined && quantityDelta !== null && quantityDelta !== '') {
+                updated.quantity = Math.max(0, updated.quantity + toInt(quantityDelta, 'quantity_delta', { min: -1_000_000, max: 1_000_000 }));
+            }
+            if (updated.quantity === 0) {
+                await finish(items.filter(entry => entry.id !== current.id));
+                return { sheet: sheetItem.sheet.name, action: 'used_up', item: current.name };
+            }
+            await finish(items.map(entry => (entry.id === current.id ? updated : entry)));
+            return { sheet: sheetItem.sheet.name, action: 'updated', item: describeEntry(updated.id) };
         });
     }
 

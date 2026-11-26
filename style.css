@@ -934,3 +934,133 @@
     width: auto;
     flex: 1;
 }
+
+/* ---------- método de rolagem, treinamento e itens ---------- */
+
+.agst-dice-presets {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 8px;
+}
+
+.agst-dice-presets .menu_button {
+    margin: 0;
+}
+
+.agst-preset.is-active {
+    border-color: var(--agst-accent);
+    color: var(--agst-accent);
+}
+
+.agst-dice-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+    gap: 8px;
+    margin-bottom: 6px;
+}
+
+.agst-dice-grid label {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    font-size: 0.9em;
+}
+
+.agst-dice-grid .text_pole {
+    margin: 0;
+    width: 100%;
+}
+
+.agst-training-select.text_pole {
+    width: auto;
+    max-width: 150px;
+    margin: 0;
+    padding: 2px 4px;
+    font-size: 0.85em;
+}
+
+.agst-roll-formula {
+    min-width: 64px;
+    white-space: nowrap;
+}
+
+.agst-slots {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 6px;
+}
+
+.agst-slot {
+    padding: 6px 8px;
+    border: 1px solid var(--agst-border);
+    border-radius: 8px;
+}
+
+.agst-slot-name {
+    font-size: 0.8em;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--agst-muted-color);
+    margin-bottom: 4px;
+}
+
+.agst-slot-items,
+.agst-item-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.agst-item-card {
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+    padding: 4px 6px;
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.03);
+}
+
+.agst-item-main {
+    flex: 1;
+    min-width: 0;
+    overflow-wrap: anywhere;
+    line-height: 1.4;
+}
+
+.agst-item-card .agst-icon-button {
+    width: 26px;
+    height: 26px;
+    font-size: 0.85em;
+}
+
+.agst-item-form-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+.agst-item-form-row > .text_pole {
+    flex: 1;
+}
+
+@media (max-width: 760px) {
+    .agst-skill {
+        flex-wrap: wrap;
+    }
+
+    .agst-skill-name {
+        flex-basis: 100%;
+    }
+
+    .agst-training-select.text_pole {
+        flex: 1;
+        max-width: none;
+    }
+
+    .agst-item-card .agst-icon-button {
+        width: 32px;
+        height: 32px;
+    }
+}
