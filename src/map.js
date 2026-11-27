@@ -265,7 +265,7 @@ export class MapService {
             let changed = 0;
             for (const entry of [...entries].reverse()) {
                 if (entry.kind === 'map_world') {
-                    await this.saveWorld(entry.worldId, normalizeWorld(entry.before));
+                    if (entry.before) await this.saveWorld(entry.worldId, normalizeWorld(entry.before));
                     changed++;
                 } else if (entry.kind === 'map_index') {
                     const before = entry.before;
@@ -276,6 +276,8 @@ export class MapService {
                             await this.storage.remove(WORLDS_TABLE, id);
                         }
                     }
+                    // Mundos que existiam (ex.: ao refazer uma swipe) voltam para o índice.
+                    this.index.worlds = structuredClone(before.worlds ?? {});
                     this.index.characterDefaults = { ...(before.characterDefaults ?? {}) };
                     changed++;
                 } else if (entry.kind === 'map_chat') {
@@ -293,6 +295,32 @@ export class MapService {
             await this.saveIndex();
             if (changed) this.emit({ type: 'undo' });
             return changed;
+        });
+    }
+
+    /** Estado atual das mesmas coisas que as entradas descrevem (para refazer ao voltar numa swipe). */
+    snapshotEntries(entries) {
+        return this.run(async () => {
+            const scope = this.scope();
+            const result = [];
+            for (const entry of entries) {
+                if (entry.kind === 'map_world') {
+                    const exists = Boolean(this.index.worlds[entry.worldId]);
+                    result.push({
+                        key: entry.key,
+                        kind: 'map_world',
+                        worldId: entry.worldId,
+                        before: exists ? structuredClone(await this.loadWorld(entry.worldId)) : null,
+                        indexEntry: exists ? { ...this.index.worlds[entry.worldId] } : null,
+                    });
+                } else if (entry.kind === 'map_index') {
+                    result.push({ key: entry.key, kind: 'map_index', before: structuredClone(this.index) });
+                } else if (entry.kind === 'map_chat') {
+                    const current = scope.hasChat ? scope.context.chatMetadata[CHAT_META_KEY]?.map : null;
+                    result.push({ key: entry.key, kind: 'map_chat', chatId: scope.chatId, before: current ? structuredClone(current) : null });
+                }
+            }
+            return result;
         });
     }
 

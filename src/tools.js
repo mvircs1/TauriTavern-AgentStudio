@@ -15,6 +15,7 @@ export const TOOL_GROUPS = Object.freeze({
     loreWrite: 'loreWriteTools',
     system: 'systemTools',
     map: 'mapTools',
+    campaign: 'campaignTools',
 });
 
 const PLACE_PARAM = { type: 'string', description: 'Place name or path like "Solenne/Taverna do Corvo".' };
@@ -278,6 +279,32 @@ const ARG_ALIASES = {
     map_move: { to: ['place', 'destination', 'location', 'where', 'para'], who: ['character', 'npc', 'sheet', 'quem'] },
     map_search: { query: QUERY_ALIASES },
     map_delete: { place: ['location', 'name', 'lugar'] },
+    sheet_condition: {
+        sheet: [...SHEET_ALIASES, 'character', 'target'],
+        name: ['condition', 'status', 'effect', 'condicao', 'nome'],
+        target: ['applies_to', 'affects', 'on', 'stat', 'skill', 'alvo'],
+        value: ['modifier', 'bonus', 'penalty', 'mod', 'valor'],
+        rounds: ['duration', 'turns', 'rodadas', 'duracao'],
+    },
+    combat: {
+        action: ['op', 'command', 'acao'],
+        participants: ['combatants', 'creatures', 'names', 'who', 'participantes', 'add', 'remove'],
+    },
+    quest: {
+        quest: ['quest_name', 'name', 'id', 'missao'],
+        add_objectives: ['new_objectives', 'add_objective'],
+        complete_objectives: ['done_objectives', 'check_objectives', 'complete_objective', 'objective_done'],
+        uncheck_objectives: ['undo_objectives'],
+        remove_objectives: ['delete_objectives'],
+    },
+    game_time: {
+        advance_minutes: ['minutes', 'add_minutes'],
+        advance_hours: ['hours', 'add_hours'],
+        advance_days: ['days', 'add_days'],
+        set_time: ['time', 'hour', 'hora', 'at'],
+        set_day: ['day', 'dia'],
+        weather: ['clima', 'tempo'],
+    },
     ability_use: {
         sheet: [...SHEET_ALIASES, 'user', 'caster', 'attacker'],
         ability: ['ability_name', 'name', 'skill', 'power', 'spell', 'habilidade'],
@@ -363,6 +390,30 @@ const ARG_FIXES = {
         const mode = foldText(input.mode ?? '');
         if (input.advantage === true || ['vantagem', 'adv'].includes(mode)) input.mode = 'advantage';
         else if (input.disadvantage === true || ['desvantagem', 'dis'].includes(mode)) input.mode = 'disadvantage';
+    },
+    sheet_condition: input => {
+        const action = foldText(input.action ?? '');
+        if (['apply', 'set', 'give', 'adicionar', 'aplicar', 'update', 'edit'].includes(action)) input.action = 'add';
+        else if (['delete', 'cure', 'end', 'remover', 'curar', 'tirar'].includes(action)) input.action = 'remove';
+        else if (['clear_all', 'limpar', 'remove_all'].includes(action)) input.action = 'clear';
+        else if (action && !['add', 'remove', 'clear'].includes(action)) input.action = 'add';
+        if (typeof input.value === 'string') input.value = Number(input.value.replace(/^\+/, ''));
+        if (typeof input.rounds === 'string' && /^(permanent|permanente|until|ate|indefinid)/i.test(foldText(input.rounds))) delete input.rounds;
+    },
+    combat: input => {
+        const action = foldText(input.action ?? '');
+        const map = { begin: 'start', iniciar: 'start', comecar: 'start', next_turn: 'next', proximo: 'next', advance: 'next', end_turn: 'next', stop: 'end', finish: 'end', encerrar: 'end', terminar: 'end', join: 'add', adicionar: 'add', leave: 'remove', flee: 'remove', remover: 'remove', show: 'status', list: 'status' };
+        if (map[action]) input.action = map[action];
+    },
+    quest: input => {
+        const action = foldText(input.action ?? '');
+        const map = { new: 'create', add: 'create', criar: 'create', nova: 'create', edit: 'update', change: 'update', atualizar: 'update', done: 'complete', finish: 'complete', concluir: 'complete', completar: 'complete', failed: 'fail', falhar: 'fail', delete: 'remove', remover: 'remove', show: 'list', listar: 'list', reabrir: 'reopen' };
+        if (map[action]) input.action = map[action];
+        // Objetivos dados como texto único separado por ";" ou quebras de linha.
+        for (const key of ['objectives', 'add_objectives', 'complete_objectives', 'uncheck_objectives', 'remove_objectives']) {
+            if (typeof input[key] === 'string' && /[;\n]/.test(input[key])) input[key] = input[key].split(/[;\n]/).map(item => item.trim()).filter(Boolean);
+            if (typeof input[key] === 'number') input[key] = [String(input[key])];
+        }
     },
     system_roll: input => {
         const mode = foldText(input.mode ?? '');
@@ -461,7 +512,7 @@ const STUDIO_INTRO ='The Agent Studio is the user\'s persistent, GLOBAL file spa
 /**
  * @param {{ fs: import('./studio-fs.js').StudioFS, lore: import('./lorebook.js').LorebookService }} services
  */
-export function buildToolDefinitions({ fs, lore, system, map }) {
+export function buildToolDefinitions({ fs, lore, system, map, campaign }) {
     return [
         // ---------- estúdio ----------
         {
@@ -886,7 +937,7 @@ export function buildToolDefinitions({ fs, lore, system, map }) {
         {
             name: 'system_roll',
             group: TOOL_GROUPS.system,
-            description: 'Roll a check for a sheet: d20 + the skill total, attribute modifier or stat (+ optional situational bonus), against a difficulty class (dc) or against another sheet\'s defense ("against": the target\'s Defesa becomes the DC, for attacks). Use it when the outcome of an action is uncertain, then narrate according to the result. "advantage"/"disadvantage" roll 2d20 and keep the higher/lower. The roll is random and recorded for the user: never invent, change or reroll a result.',
+            description: 'Roll a check for a sheet with the user\'s dice method (it may be 1d20+modifier, several d20 keeping the highest, etc.: the tool does all the math). Pass the skill, attribute or stat, and a difficulty (dc) or a target sheet ("against": the target\'s defense becomes the DC, for attacks). Read "read_this" and "outcome" in the result: SUCCESS / FAILURE / CRITICAL SUCCESS / CRITICAL FAILURE, the total and the margin are final. Narrate exactly that outcome; never invent, change, recompute or reroll a result. "advantage"/"disadvantage" add/remove one die. Conditions and equipped items are already included.',
             inputSchema: {
                 type: 'object',
                 properties: {
@@ -1111,6 +1162,134 @@ export function buildToolDefinitions({ fs, lore, system, map }) {
             },
             run: args => map.search({ query: args.query, limit: args.limit }),
             summarize: (args, result) => `Buscou "${args.query}" no mapa (${result.results.length})`,
+        },
+        {
+            name: 'sheet_condition',
+            group: TOOL_GROUPS.system,
+            description: 'Add, update, remove or clear a CONDITION on a sheet: poisoned, stunned, blessed, prone, hidden, exhausted... A condition can change checks (value + target: "checks" = every check, or a skill/attribute/stat like "Defesa") and can last a number of combat rounds (it ends by itself when rounds run out; without rounds it lasts until removed). Conditions are applied automatically to system_roll and shown in the game state.',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    sheet: SHEET_PARAM,
+                    action: { type: 'string', enum: ['add', 'remove', 'clear'], description: '"add" also updates an existing condition with the same name. Default "add".' },
+                    name: { type: 'string', description: 'Condition name, e.g. "Envenenado".' },
+                    description: { type: 'string', description: 'What it does in the story (e.g. "loses 1 Vida at the start of each turn").' },
+                    target: { type: 'string', description: '"checks" (all checks) or a skill, attribute or stat name. Needed if value is set.' },
+                    value: { type: 'integer', description: 'Modifier while the condition lasts, e.g. -2 or +1.' },
+                    rounds: { type: 'integer', description: 'How many combat rounds it lasts. Omit for "until removed".' },
+                },
+                required: ['sheet'],
+            },
+            run: (args, context) => system.condition(args.sheet, {
+                action: args.action ?? 'add',
+                name: args.name,
+                description: args.description,
+                target: args.target,
+                value: args.value,
+                rounds: args.rounds,
+                runId: context.runId,
+            }),
+            summarize: (args, result) => (result.removed !== undefined && Array.isArray(result.removed)
+                ? `Limpou as condições de ${result.sheet}`
+                : result.removed ? `${result.sheet}: sem ${result.removed}` : `${result.sheet}: ${result.added ?? result.updated}`),
+        },
+        {
+            name: 'combat',
+            group: TOOL_GROUPS.campaign,
+            description: 'Combat tracker for this chat. "start" with the participants (sheet names roll initiative automatically; creatures without a sheet can be given {"name": "Lobo 2", "initiative": 12} or roll 1d20) and returns the turn order. Then narrate ONE turn at a time and call "next" when a creature has acted: on each new round, conditions with a duration lose a round. "add"/"remove" participants (reinforcements, fled, died), "end" when the fight is over, "status" to see whose turn it is. The current round, order and whose turn it is also appear in the game state in the prompt.',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    action: { type: 'string', enum: ['start', 'next', 'add', 'remove', 'end', 'status'], description: 'Default "status".' },
+                    participants: {
+                        type: 'array',
+                        description: 'For start/add/remove: names (strings) or objects.',
+                        items: {
+                            type: 'object',
+                            properties: {
+                                name: { type: 'string', description: 'Sheet name or creature name.' },
+                                initiative: { type: 'integer', description: 'Fixed initiative (optional; sheets roll it).' },
+                            },
+                            required: ['name'],
+                        },
+                    },
+                },
+            },
+            run: (args, context) => campaign.combat({ action: args.action ?? 'status', participants: args.participants, runId: context.runId }),
+            summarize: (args, result) => (result.active
+                ? `Combate: rodada ${result.round}, vez de ${result.turn_of}`
+                : result.ended_after_rounds ? `Fim do combate (${result.ended_after_rounds} rodada(s))` : 'Sem combate'),
+        },
+        {
+            name: 'quest',
+            group: TOOL_GROUPS.campaign,
+            description: 'Quest journal of this chat: missions, jobs, promises, mysteries the player is pursuing. "create" when the player accepts or discovers a goal (title, description, objectives, giver, reward, secret = narrator-only truth). "update" to add/complete/uncheck/remove objectives (by number or text) and change fields. "complete" or "fail" when the story resolves it, "reopen", "remove", "list". Active quests and their pending objectives appear in the game state in the prompt.',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    action: { type: 'string', enum: ['create', 'update', 'complete', 'fail', 'reopen', 'remove', 'list'], description: 'Default "list".' },
+                    quest: { type: 'string', description: 'Existing quest title (or part of it) for update/complete/fail/reopen/remove.' },
+                    title: { type: 'string', description: 'Title (create), or the new title (update).' },
+                    description: { type: 'string', description: 'What the quest is about.' },
+                    objectives: { type: 'array', items: { type: 'string', description: 'Objective.' }, description: 'Objectives when creating.' },
+                    add_objectives: { type: 'array', items: { type: 'string', description: 'Objective.' }, description: 'New objectives.' },
+                    complete_objectives: { type: 'array', items: { type: 'string', description: 'Number (1, 2...) or text.' }, description: 'Objectives the player achieved.' },
+                    uncheck_objectives: { type: 'array', items: { type: 'string', description: 'Number or text.' }, description: 'Objectives to mark as not done again.' },
+                    remove_objectives: { type: 'array', items: { type: 'string', description: 'Number or text.' }, description: 'Objectives that no longer apply.' },
+                    giver: { type: 'string', description: 'Who gave the quest.' },
+                    reward: { type: 'string', description: 'Promised reward.' },
+                    secret: { type: 'string', description: 'Narrator-only truth (twist, real culprit...). Never reveal it directly.' },
+                },
+            },
+            run: (args, context) => campaign.quest({
+                action: args.action ?? 'list',
+                quest: args.quest,
+                title: args.title,
+                description: args.description,
+                objectives: args.objectives,
+                addObjectives: args.add_objectives,
+                completeObjectives: args.complete_objectives,
+                uncheckObjectives: args.uncheck_objectives,
+                removeObjectives: args.remove_objectives,
+                giver: args.giver,
+                reward: args.reward,
+                secret: args.secret,
+                runId: context.runId,
+            }),
+            summarize: (args, result) => {
+                if (result.created) return `Nova missão: ${result.created.title}`;
+                if (result.removed) return `Removeu a missão ${result.removed}`;
+                if (result.quest) return `Missão ${result.quest.title} (${result.quest.status})`;
+                return `Missões: ${result.active?.length ?? 0} ativa(s)`;
+            },
+        },
+        {
+            name: 'game_time',
+            group: TOOL_GROUPS.campaign,
+            description: 'In-game clock and weather of this chat. Advance time when it passes in the story (travel, rest, waiting): advance_minutes/hours/days, or set_time ("HH:MM" or dawn/noon/dusk/night; an earlier hour moves to the next day) and set_day. Change "weather" when it changes. With no arguments, shows the current time. The current day, hour and weather appear in the game state in the prompt.',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    advance_minutes: { type: 'integer', description: 'Minutes that passed.' },
+                    advance_hours: { type: 'integer', description: 'Hours that passed (e.g. 8 for a night of sleep).' },
+                    advance_days: { type: 'integer', description: 'Days that passed.' },
+                    set_time: { type: 'string', description: '"14:30", or dawn, morning, noon, afternoon, dusk, night, midnight.' },
+                    set_day: { type: 'integer', description: 'Day number (starts at 1).' },
+                    weather: { type: 'string', description: 'Weather now, e.g. "chuva fina", "neblina".' },
+                    note: { type: 'string', description: 'Short note shown with the time (season, festival, "lua cheia").' },
+                },
+            },
+            run: (args, context) => campaign.time({
+                advanceMinutes: args.advance_minutes,
+                advanceHours: args.advance_hours,
+                advanceDays: args.advance_days,
+                setTime: args.set_time,
+                setDay: args.set_day,
+                weather: args.weather,
+                note: args.note,
+                runId: context.runId,
+            }),
+            summarize: (args, result) => `Tempo: ${result.now}`,
         },
         {
             name: 'map_delete',

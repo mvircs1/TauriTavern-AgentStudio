@@ -83,7 +83,9 @@ describe('estatísticas', () => {
         assert.equal(attack.dc, 12, 'Defesa do Goblin = 10 + 1 (Destreza 12) + 1');
         assert.deepEqual(attack.against, { sheet: 'Goblin', stat: 'Defesa', value: 12 });
         assert.equal(attack.success, true);
-        assert.match(attack.summary, /vs Defesa 12 de Goblin: sucesso/);
+        assert.match(attack.summary, /vs Defesa 12 de Goblin → SUCESSO \(margem \+0\)/);
+        assert.equal(attack.outcome, 'SUCCESS');
+        assert.match(attack.read_this, /SUCCESS, by a hair \(total 12 vs Defesa 12 of Goblin, margin \+0\)\. This result is final/);
     });
 
     test('Iniciativa pode ser rolada como teste', async () => {
@@ -146,9 +148,10 @@ describe('habilidades', () => {
         assert.equal(used.check.total, 17);
         assert.equal(used.check.dc, 10);
         assert.equal(used.hit, true);
+        assert.match(used.read_this, /Bola de Fogo used by Aria on Goblin; paid 3 Mana \(10 → 7\); HIT: SUCCESS \(total 17 vs Defesa 10\); effect 2d6 rolled 8; damage applied: Vida of Goblin 7 → 0\/7 \(reached 0!\)/);
         assert.equal(used.effect.total, 8);
         assert.deepEqual([used.applied.before, used.applied.after], [7, 0]);
-        assert.match(activity.list()[0].summary, /Bola de Fogo \(Aria → Goblin\); -3 Mana; Inteligência: d20 15 \+2 = 17 vs Defesa 10 de Goblin: sucesso; efeito 2d6 \(3\+5\) = 8; Vida de Goblin 7 → 0/);
+        assert.match(activity.list()[0].summary, /Bola de Fogo \(Aria → Goblin\); -3 Mana; Inteligência: 1d20: 15 \+ 2 \(modificador de Inteligência\) = 17 vs Defesa 10 de Goblin → SUCESSO \(margem \+7\); efeito 2d6 \(3\+5\) = 8; Vida de Goblin 7 → 0/);
 
         const goblin = await system.readSheet('Goblin');
         assert.equal(goblin.resources[0].current, 0);

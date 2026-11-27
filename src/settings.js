@@ -14,6 +14,9 @@ export const DEFAULT_SETTINGS = Object.freeze({
     mapTools: true,
     mapPrompt: true,
     mapLore: true,
+    campaignTools: true,
+    statePrompt: true,
+    stateQuests: true,
     undoOnRegenerate: true,
     backupsPerBook: 20,
 });
@@ -75,11 +78,11 @@ export function renderSettingsDrawer({ bridge, panel, storageKind }) {
                 </label>
                 <label class="checkbox_label">
                     <input type="checkbox" data-setting="systemTools">
-                    <span>Sistema: ler e editar fichas, Vida/Mana e testes de d20</span>
+                    <span>Sistema: fichas, Vida/Mana, condições e testes de dados</span>
                 </label>
-                <label class="checkbox_label" title="Ao regenerar uma resposta ou gerar uma nova swipe, o que o Agent mudou naquela resposta (arquivos, lorebooks, fichas) volta ao estado anterior. Também desfaz runs que falham ou são canceladas.">
+                <label class="checkbox_label" title="Ao regenerar uma resposta ou gerar uma nova swipe, o que o Agent mudou naquela resposta (arquivos, lorebooks, fichas, mapa, campanha) volta ao estado anterior. Ao voltar para uma swipe antiga, o que ela fez é refeito. Também desfaz runs que falham ou são canceladas.">
                     <input type="checkbox" data-setting="undoOnRegenerate">
-                    <span>Desfazer as alterações do Agent ao regenerar / gerar nova swipe</span>
+                    <span>Desfazer/refazer as alterações do Agent ao regenerar e ao trocar de swipe</span>
                 </label>
 
                 <h4>Mapa</h4>
@@ -94,6 +97,19 @@ export function renderSettingsDrawer({ bridge, panel, storageKind }) {
                 <label class="checkbox_label" title="Entradas de lorebook vinculadas ao local atual (e aos NPCs com ficha que estão nele) são ativadas sem precisar de palavra-chave. Deixe essas entradas sem chave para que só apareçam no lugar certo.">
                     <input type="checkbox" data-setting="mapLore">
                     <span>Ativar as entradas de lorebook do local atual</span>
+                </label>
+                <h4>Campanha</h4>
+                <label class="checkbox_label">
+                    <input type="checkbox" data-setting="campaignTools">
+                    <span>Ferramentas de campanha (combate, missões, relógio do jogo)</span>
+                </label>
+                <label class="checkbox_label" title="Um bloco curto com a hora do jogo, Vida/Mana e condições do jogador, o combate (ordem e de quem é a vez) e as missões ativas vai para o prompt. Assim a IA não esquece nem inventa esses números.">
+                    <input type="checkbox" data-setting="statePrompt">
+                    <span>Colocar o estado do jogo no prompt (tempo, Vida/Mana, combate)</span>
+                </label>
+                <label class="checkbox_label">
+                    <input type="checkbox" data-setting="stateQuests">
+                    <span>Incluir as missões ativas nesse bloco</span>
                 </label>
                 <div class="agst-settings-row">
                     <label for="agst_backups_per_book">Backups guardados por lorebook</label>

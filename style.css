@@ -1242,3 +1242,154 @@
         max-width: none;
     }
 }
+
+/* ---------- Condições (ficha) ---------- */
+
+.agst-condition-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 4px;
+}
+
+.agst-condition {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 4px 2px 10px;
+    border: 1px solid var(--agst-accent);
+    border-radius: 14px;
+    font-size: 0.9em;
+}
+
+.agst-condition-add .agst-number {
+    flex: 0 0 80px;
+}
+
+.agst-rest.menu_button {
+    margin: 0;
+}
+
+/* ---------- Campanha ---------- */
+
+.agst-campaign h4 {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.agst-camp-clock {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 4px 12px;
+    margin-bottom: 6px;
+}
+
+.agst-camp-now {
+    font-size: 1.1em;
+    font-weight: bold;
+}
+
+.agst-camp-order {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-bottom: 6px;
+}
+
+.agst-camp-turn {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 8px;
+    border: 1px solid var(--agst-border);
+    border-radius: 6px;
+}
+
+.agst-camp-turn.is-current {
+    border-color: var(--agst-accent);
+    background: var(--agst-selected);
+}
+
+.agst-camp-init {
+    min-width: 2.2em;
+    text-align: center;
+    font-weight: bold;
+    color: var(--agst-accent);
+}
+
+.agst-camp-who {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2px 8px;
+    overflow-wrap: anywhere;
+}
+
+.agst-quest-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-bottom: 6px;
+}
+
+.agst-quest {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 8px 10px;
+    border: 1px solid var(--agst-border);
+    border-radius: 8px;
+}
+
+.agst-quest.is-done,
+.agst-quest.is-failed {
+    opacity: 0.75;
+}
+
+.agst-quest-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.agst-quest-text {
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+}
+
+.agst-quest-objectives {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.agst-quest-objectives .checkbox_label {
+    margin: 0;
+}
+
+.agst-quest-objectives .is-done {
+    text-decoration: line-through;
+    opacity: 0.7;
+}
+
+.agst-quest-secret summary {
+    cursor: pointer;
+    color: var(--agst-muted-color);
+}
+
+.agst-camp-toggle.menu_button {
+    margin: 0 0 6px;
+}
+
+.agst-quest-head {
+    flex-wrap: nowrap;
+}
+
+.agst-quest-head b {
+    min-width: 0;
+    overflow-wrap: anywhere;
+}

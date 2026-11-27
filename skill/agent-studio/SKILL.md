@@ -1,7 +1,7 @@
 ---
 name: agent-studio
-description: Guia das ferramentas do Agent Studio. Cobre o estúdio de arquivos persistente (studio_*), os lorebooks/World Info (lorebook_*) e o sistema de RPG com fichas, Vida/Mana, Defesa, perícias com treinamento, habilidades, itens/equipamento e testes de dados (system_*, sheet_*, ability_use), e o mapa do mundo em três níveis com a posição do jogador (map_*). Leia no começo de qualquer run em que o usuário fale de lore, notas, organizar informações, lorebook, ficha, atributos, perícias, habilidades, magias, itens, equipamento, dano, cura, combate, teste de dado, lugares, viagem ou mapa.
-version: 0.7.0
+description: Guia das ferramentas do Agent Studio. Cobre o estúdio de arquivos persistente (studio_*), os lorebooks/World Info (lorebook_*) e o sistema de RPG com fichas, Vida/Mana, Defesa, perícias com treinamento, habilidades, itens/equipamento e testes de dados, condições (system_*, sheet_*, ability_use), combate, missões e tempo (combat, quest, game_time), e o mapa do mundo em três níveis com a posição do jogador (map_*). Leia no começo de qualquer run em que o usuário fale de lore, notas, organizar informações, lorebook, ficha, atributos, perícias, habilidades, magias, itens, equipamento, dano, cura, combate, iniciativa, condição, missão, tempo, teste de dado, lugares, viagem ou mapa.
+version: 0.8.0
 author: mvircs1
 tags: [agent-studio, rpg, lorebook, world-info, map]
 ---
@@ -24,6 +24,10 @@ Depois de usar as ferramentas, escreva a resposta da história normalmente no se
 | Ver as fichas da cena, Vida/Mana e Defesa de todos | `sheet_list` |
 | Ver uma ficha completa (com habilidades) | `sheet_read` |
 | Rolar um teste ou um ataque contra a Defesa de alguém | `system_roll` |
+| Envenenar, atordoar, abençoar (condições) | `sheet_condition` |
+| Começar um combate, passar o turno, encerrar | `combat` |
+| Missões e objetivos | `quest` |
+| Passar o tempo, mudar o clima | `game_time` |
 | Usar uma habilidade (gasta custo, rola teste e efeito) | `ability_use` |
 | Dar, editar ou tirar uma habilidade de um personagem | `sheet_ability` |
 | Dar, equipar, guardar, consumir ou tirar itens | `sheet_item` |
@@ -74,57 +78,60 @@ Depois de usar as ferramentas, escreva a resposta da história normalmente no se
 
 ### Quando rolar
 
-Role quando a ação for incerta e falhar teria consequência. Não role para coisas triviais.
-
-Escolha a perícia mais adequada, ou o atributo se nenhuma servir. Use vantagem ou desvantagem quando a situação claramente ajudar ou atrapalhar.
+Role quando a ação for incerta e falhar teria consequência. Não role para coisas triviais. Escolha a perícia mais adequada (ou o atributo). Vantagem/desvantagem quando a situação claramente ajudar ou atrapalhar.
 
 ```json
 { "check": "Furtividade", "dc": 15, "reason": "passar pelos guardas sem ser visto" }
 ```
 
-Exemplo para um NPC, com vantagem:
+### Como ler o resultado
+
+A ferramenta faz **toda** a conta com o método do usuário. Leia `read_this` e `outcome`:
+
+- `SUCCESS` / `FAILURE`: narre exatamente isso.
+- `CRITICAL SUCCESS` (20 natural) / `CRITICAL FAILURE` (1 natural): sucesso ou falha marcante.
+- `margin`: quanto passou ou faltou. +10 ou mais é um sucesso brilhante; perto de 0, "por um triz".
+- `math` mostra de onde veio cada número (dados, atributo, treino, itens, condições). **Já está tudo somado**: não some modificadores de novo e não refaça a conta.
+- **Nunca invente, mude ou repita uma rolagem.**
+- Sem `dc` nem `against`, vem `"outcome": "NO DC"`: compare o `total` com a dificuldade que você tinha em mente.
+
+### O estado do jogo no prompt
+
+Perto do fim do prompt há um bloco `[Estado do jogo]` com a hora, Vida/Mana e condições do jogador, o combate (ordem e de quem é a vez) e as missões ativas. **Ele está sempre certo**: use esses números, não os de mensagens antigas.
+
+### Condições
+
+Envenenado, Atordoado, Caído, Abençoado, Escondido... Use `sheet_condition`. Com `value` + `target`, muda testes (`"checks"` = todos, ou uma perícia/atributo/estatística como `"Defesa"`); com `rounds`, acaba sozinha quando as rodadas do combate passam.
 
 ```json
-{ "sheet": "Capitão Voss", "check": "Intimidação", "dc": 12, "mode": "advantage" }
+{ "sheet": "Goblin", "name": "Envenenado", "target": "checks", "value": -2, "rounds": 3, "description": "perde 1 Vida por turno" }
 ```
 
-- **Nunca invente, mude ou repita uma rolagem.** Narre de acordo com `success`.
-- `natural: 20` merece um sucesso marcante e `natural: 1` uma falha marcante, mesmo que o total diga outra coisa.
+- Tire com `"action": "remove"` quando a história acabar com ela (cura, levantar, sair do esconderijo).
+- Os efeitos de cada turno (como perder Vida) você aplica com `sheet_resource`.
 
 ### Combate
 
-- **Ordem**: no começo de uma luta, role `Iniciativa` de cada participante (`system_roll {"sheet": "...", "check": "Iniciativa"}`).
-- **Ataque comum**: role a perícia ou atributo do ataque **contra a Defesa do alvo**:
+1. `combat {"action": "start", "participants": ["Aria", "Goblin", {"name": "Lobo", "initiative": 12}]}`. Fichas rolam a iniciativa sozinhas.
+2. Narre **um turno por vez**, na ordem. Depois que uma criatura agir, `combat {"action": "next"}`.
+3. **Ataque**: `system_roll` contra a Defesa do alvo, ou `ability_use` para habilidades:
 
 ```json
 { "sheet": "Goblin", "check": "Destreza", "against": "Aria", "reason": "flecha" }
 ```
 
-- **Ataque ou magia que o personagem tem como habilidade**: use `ability_use`, que faz tudo de uma vez (veja "Habilidades" abaixo).
-- **Dano sem habilidade**, para personagens com Vida por volta de 10: leve 1–3, médio 4–6, grave 7–10. Aplique sempre com `sheet_resource`.
-- **Armadura ou escudo** que o personagem equipa viram bônus de Defesa: `sheet_update {"stats": [{"name": "Defesa", "bonus": 2}]}`.
-
-Dano no jogador (omitir `sheet` = jogador):
+4. **Dano** sem habilidade (Vida por volta de 10): leve 1–3, médio 4–6, grave 7–10, sempre com `sheet_resource`:
 
 ```json
-{ "resource": "Vida", "delta": -4 }
+{ "sheet": "Goblin", "resource": "Vida", "delta": -4 }
 ```
 
-Gasto de mana de um NPC:
+5. `"action": "remove"` para quem fugiu ou caiu de vez; `"action": "end"` quando a luta acabar.
 
-```json
-{ "sheet": "Lyra", "resource": "Mana", "delta": -3 }
-```
-
-Valor exato:
-
-```json
-{ "resource": "Vida", "set": 10 }
-```
-
-- Sempre que a história causar dano, cura, descanso ou uso de magia, **atualize o recurso na mesma hora**. A ficha precisa refletir a história.
-- Em 0 de Vida o personagem cai. O que isso significa (inconsciente, capturado, morto) depende da história e do tom do usuário.
-- Mencione as mudanças de forma natural na resposta, por exemplo "(Vida 6/10)".
+- Omitir `sheet` = o jogador. `"set": 10` dá um valor exato.
+- Sempre que a história causar dano, cura, descanso ou uso de magia, **atualize o recurso na mesma hora**.
+- Em 0 de Vida o personagem cai. O que isso significa depende da história e do tom do usuário.
+- Armadura e escudo equipados já somam na Defesa (veja Itens).
 
 ### NPCs
 
@@ -138,19 +145,12 @@ Criar a ficha de um NPC (valores omitidos usam o padrão):
   "notes": "Mercenário veterano, espada longa." }
 ```
 
-- **Personagem recorrente com entrada em lorebook**: encontre a entrada com `lorebook_search`, depois vincule a ficha com `sheet_update {"sheet": "Capitão Voss", "link_lorebook": {"book": "Nome do Lorebook", "uid": 3}}`. Também dá para criar já vinculado, passando `link_lorebook` no `sheet_create`.
+- **Personagem recorrente com entrada em lorebook**: vincule a ficha (`link_lorebook: {"book": "…", "uid": 3}` no `sheet_create` ou `sheet_update`; ache o uid com `lorebook_search`).
 - **Inimigos descartáveis**: deixe a ficha no chat. Apague com `sheet_delete` quando não forem mais necessários.
 
 ### Habilidades (magias, poderes, técnicas)
 
-Cada ficha tem uma lista de habilidades. Cada habilidade tem:
-
-- `cost` + `cost_resource`: custo por uso, por exemplo 3 de Mana.
-- `check`: a perícia ou atributo rolado para acertar. Sem ele, a habilidade sempre funciona.
-- `effect`: dados como `"2d6+FOR"` ou `"1d8+2"`, rolados no uso, ou um texto livre.
-- Campos extras do usuário, como Alcance, Duração e Recarga, em `fields`.
-
-Dar uma habilidade a alguém (`sheet_ability`):
+Cada habilidade tem custo (`cost` + `cost_resource`), um `check` para acertar (sem ele, sempre funciona), um `effect` (dados como `"2d6+FOR"`, rolados no uso, ou texto) e os campos extras do usuário em `fields`. Dar uma (`sheet_ability`):
 
 ```json
 { "sheet": "Aria", "action": "add", "name": "Flecha Arcana",
@@ -161,7 +161,7 @@ Dar uma habilidade a alguém (`sheet_ability`):
 
 Para editar, use `"action": "update"` com o nome atual em `"ability"`. Para tirar, use `"action": "remove"`.
 
-Usar a habilidade (`ability_use`). Ela paga o custo, rola o teste contra a Defesa do alvo, rola o efeito e, com `"apply": "damage"`, já tira a Vida do alvo se acertar:
+Usar (`ability_use`): paga o custo, rola contra a Defesa do alvo, rola o efeito e, com `"apply": "damage"`, já tira a Vida do alvo se acertar. O `read_this` do resultado diz tudo o que aconteceu; não aplique de novo.
 
 ```json
 { "sheet": "Aria", "ability": "Flecha Arcana", "target": "Goblin", "apply": "damage" }
@@ -197,6 +197,21 @@ Dar um item já equipado (`sheet_item`):
 - Quando o personagem pega, compra, ganha, perde, quebra ou usa algo na história, **atualize os itens na hora**.
 
 Você não pode editar as regras (atributos, perícias, níveis de treinamento, partes do corpo, método de rolagem). Se a história pedir algo que não existe, sugira ao usuário criar na aba **Sistema** do Agent Studio.
+
+### Missões
+
+`quest` é o diário do jogador: trabalhos, promessas, mistérios. Crie quando ele aceitar ou descobrir um objetivo; `secret` guarda a verdade que só você sabe.
+
+```json
+{ "action": "create", "title": "Resgatar Mira", "objectives": ["Achar o porão", "Falar com o guarda"], "giver": "Bento", "secret": "O guarda é cúmplice." }
+```
+
+- Objetivo cumprido: `{"action": "update", "quest": "Mira", "complete_objectives": ["1"]}` (número ou texto). Novos: `add_objectives`.
+- `"action": "complete"` ou `"fail"` quando a história resolver.
+
+### Tempo
+
+`game_time` guarda o dia, a hora e o clima. Avance quando o tempo passar na história (viagem, descanso, espera): `{"advance_hours": 8}`, `{"set_time": "dusk"}`, `{"weather": "neblina"}`. Uma hora que já passou hoje vai para o dia seguinte. Leve a hora em conta (lojas fechadas à noite, guardas trocando de turno).
 
 ## 2. Mapa (mundo › região › local)
 

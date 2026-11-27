@@ -1,13 +1,16 @@
 // Agent Studio: add-on do modo Agent do TauriTavern.
 // 1) Um estúdio global de arquivos que o Agent (e você) organiza, cria e edita.
 // 2) Ferramentas para o Agent ler e editar os lorebooks (World Info), com backup automático.
-// 3) Um sistema de RPG simples (atributos, perícias, Vida/Mana, testes de d20) com fichas.
+// 3) Um sistema de RPG simples (atributos, perícias, Vida/Mana, condições, testes de dados) com fichas.
 // 4) Mapas em três níveis (mundo, região, local), com o local atual no prompt.
+// 5) Campanha por chat: relógio do jogo, combate (iniciativa e rodadas) e missões, com o estado no prompt.
 
 import { ActivityLog } from './src/activity.js';
+import { CampaignService } from './src/campaign.js';
 import { LorebookService } from './src/lorebook.js';
 import { MapService } from './src/map.js';
 import { LocationPrompt } from './src/map-prompt.js';
+import { StatePrompt } from './src/state-prompt.js';
 import { StudioPanel } from './src/panel.js';
 import { getSettings, renderSettingsDrawer } from './src/settings.js';
 import { createStorage } from './src/storage.js';
@@ -74,6 +77,7 @@ async function init() {
     const system = new SystemService(storage, lore);
     await system.run(() => undefined);
     const map = new MapService(storage, lore, system);
+    const campaign = new CampaignService(system);
 
     // Diário por run: permite desfazer o que o Agent fez numa resposta regenerada/descartada.
     const journal = new RunJournal(storage, {
@@ -86,18 +90,21 @@ async function init() {
     lore.journal = journal;
     system.journal = journal;
     map.journal = journal;
+    campaign.journal = journal;
     // A ordem importa: primeiro desfaz (ao regenerar), depois atualiza o local no prompt.
-    const rollback = new RollbackManager({ journal, fs, lore, system, map, activity, getSettings });
+    const rollback = new RollbackManager({ journal, fs, lore, system, map, campaign, activity, getSettings });
     rollback.install();
     const locationPrompt = new LocationPrompt({ map, system, getSettings });
     locationPrompt.install();
+    const statePrompt = new StatePrompt({ campaign, system, getSettings });
+    statePrompt.install();
 
     const bridge = new AgentToolBridge({
-        definitions: buildToolDefinitions({ fs, lore, system, map }),
+        definitions: buildToolDefinitions({ fs, lore, system, map, campaign }),
         activity,
         getSettings,
     });
-    const panel = new StudioPanel({ fs, lore, activity, system, map });
+    const panel = new StudioPanel({ fs, lore, activity, system, map, campaign });
 
     const drawer = renderSettingsDrawer({ bridge, panel, storageKind: storage.kind });
     addMenuButton(panel);
@@ -110,6 +117,7 @@ async function init() {
         eventSource.on(chatChanged, () => {
             system.emit({ type: 'chat' });
             map.emit({ type: 'chat' });
+            campaign.emit({ type: 'chat' });
         });
     }
 
@@ -135,7 +143,7 @@ async function init() {
     drawer?.renderStatus();
 
     // Atalho para depuração pelo console: AgentStudio.fs.list(), AgentStudio.bridge.registeredIds() etc.
-    globalThis.AgentStudio = { fs, lore, activity, system, map, locationPrompt, bridge, panel, storage, journal, rollback };
+    globalThis.AgentStudio = { fs, lore, activity, system, map, campaign, locationPrompt, statePrompt, bridge, panel, storage, journal, rollback };
     console.info(LOG_PREFIX, `Pronto. ${bridge.registeredIds().length} ferramenta(s) registrada(s); armazenamento: ${storage.kind}.`);
 }
 

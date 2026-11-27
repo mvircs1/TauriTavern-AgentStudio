@@ -699,7 +699,7 @@ export class LorebookService {
             let changed = 0;
             const names = await this.bookNames({ refresh: true });
             for (const entry of entries.filter(item => item.kind === 'lorebook')) {
-                const stored = await this.storage.get(BACKUP_TABLE, entry.backupId);
+                const stored = entry.data ? { data: entry.data } : await this.storage.get(BACKUP_TABLE, entry.backupId);
                 if (!stored?.data) {
                     console.warn(LOG_PREFIX, `Backup ${entry.backupId} de "${entry.book}" não existe mais; não dá para desfazer.`);
                     continue;
@@ -718,6 +718,21 @@ export class LorebookService {
             }
             if (changed) await this.bookNames({ refresh: true });
             return changed;
+        });
+    }
+
+    /** Estado atual dos livros das entradas: com o conteúdo, ou "não existe" (para refazer ao voltar numa swipe). */
+    snapshotEntries(entries) {
+        return this.enqueue(async () => {
+            const names = await this.bookNames({ refresh: true });
+            const result = [];
+            for (const entry of entries) {
+                if (entry.kind !== 'lorebook' && entry.kind !== 'lorebook_created') continue;
+                result.push(names.includes(entry.book)
+                    ? { key: entry.key, kind: 'lorebook', book: entry.book, data: await this.loadBook(entry.book) }
+                    : { key: entry.key, kind: 'lorebook_created', book: entry.book });
+            }
+            return result;
         });
     }
 

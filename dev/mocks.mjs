@@ -183,7 +183,14 @@ export function createSillyTavernMock() {
         name1: 'Aria',
         chat: [],
         eventSource,
-        eventTypes: { GENERATION_STARTED: 'generation_started', CHAT_CHANGED: 'chat_id_changed', WORLDINFO_FORCE_ACTIVATE: 'worldinfo_force_activate' },
+        eventTypes: {
+            GENERATION_STARTED: 'generation_started',
+            CHAT_CHANGED: 'chat_id_changed',
+            WORLDINFO_FORCE_ACTIVATE: 'worldinfo_force_activate',
+            MESSAGE_SWIPED: 'message_swiped',
+            MESSAGE_RECEIVED: 'message_received',
+            CHARACTER_MESSAGE_RENDERED: 'character_message_rendered',
+        },
         async deleteWorldInfo(name) {
             books.delete(name);
         },

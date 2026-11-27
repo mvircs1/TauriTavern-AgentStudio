@@ -362,6 +362,7 @@ export class SystemView {
                 skill.trainingName ? `${skill.trainingName} ${formatModifier(skill.trainingBonus)}` : null,
                 skill.bonus ? `modificador ${formatModifier(skill.bonus)}` : null,
                 skill.itemBonus ? `itens ${formatModifier(skill.itemBonus)}` : null,
+                skill.conditionBonus ? `condições ${formatModifier(skill.conditionBonus)}` : null,
             ].filter(Boolean).join(', ');
             return `
             <div class="agst-skill" title="${escapeHtml(describe(KINDS.skills, skill.id))}">
@@ -435,8 +436,13 @@ export class SystemView {
                         <input type="text" class="text_pole agst-sheet-name" data-sheet-field="name" maxlength="60" value="${escapeHtml(selected.name)}" aria-label="Nome">
                         <span class="agst-badge">${LOCATION_LABELS[selected.location]}</span>
                     </div>
-                    <h5>Recursos</h5>
+                    <div class="agst-sys-section-head">
+                        <h5>Recursos</h5>
+                        <span class="agst-spacer"></span>
+                        ${selected.resources.length ? '<button type="button" class="menu_button menu_button_icon agst-rest" data-sys-action="rest" title="Descanso longo: todos os recursos voltam ao máximo e as condições com duração acabam"><i class="fa-solid fa-bed"></i><span>Descansar</span></button>' : ''}
+                    </div>
                     <div class="agst-res-list">${resources || '<div class="agst-muted">Nenhum recurso nas regras.</div>'}</div>
+                    ${this.conditionsHtml(selected, definition)}
                     ${stats ? `<h5>Estatísticas</h5><div class="agst-attr-grid">${stats}</div>` : ''}
                     <h5>Atributos</h5>
                     <div class="agst-attr-grid">${attributes || '<div class="agst-muted">Nenhum atributo nas regras.</div>'}</div>
@@ -521,6 +527,32 @@ export class SystemView {
         const rows = sheet.abilities.map(ability => (this.editingAbility === ability.id ? form(ability) : card(ability))).join('');
         const empty = '<div class="agst-muted agst-list-empty">Nenhuma habilidade. Toque em + para criar (magias, golpes, poderes).</div>';
         return `${this.editingAbility === 'new' ? form(null) : ''}${rows || (this.editingAbility === 'new' ? '' : empty)}`;
+    }
+
+    /** Condições (Envenenado, Caído...): lista com remover e um formulário curto para adicionar. */
+    conditionsHtml(selected, definition) {
+        const list = selected.conditions.map(condition => `
+            <div class="agst-condition" title="${escapeHtml(condition.description || '')}">
+                <span><b>${escapeHtml(condition.name)}</b>${condition.value ? ` <span class="agst-muted">${formatModifier(condition.value)} ${escapeHtml(condition.targetName ?? '')}</span>` : ''}${condition.rounds ? ` <span class="agst-badge">${condition.rounds} rod.</span>` : ''}</span>
+                <button type="button" class="agst-icon-button" data-sys-action="remove-condition" data-condition="${escapeHtml(condition.name)}" title="Remover"><i class="fa-solid fa-xmark"></i></button>
+            </div>`).join('');
+        const option = (id, name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`;
+        return `
+            <div class="agst-sys-section-head"><h5>Condições</h5><span class="agst-muted">${selected.conditions.length || ''}</span></div>
+            <div class="agst-condition-list">${list || '<span class="agst-muted">Nenhuma.</span>'}</div>
+            <div class="agst-map-add agst-condition-add">
+                <input type="text" class="text_pole" data-role="cond-name" maxlength="60" placeholder="Nova condição (ex.: Envenenado)">
+                <select class="text_pole" data-role="cond-target" aria-label="Afeta">
+                    <option value="">sem modificador</option>
+                    <option value="checks">todos os testes</option>
+                    <optgroup label="Estatísticas">${definition.stats.map(s => option(s.id, s.name)).join('')}</optgroup>
+                    <optgroup label="Atributos">${definition.attributes.map(a => option(a.id, a.name)).join('')}</optgroup>
+                    <optgroup label="Perícias">${definition.skills.map(s => option(s.id, s.name)).join('')}</optgroup>
+                </select>
+                <input type="number" class="text_pole agst-number" data-role="cond-value" placeholder="±" title="Modificador (ex.: -2)">
+                <input type="number" class="text_pole agst-number" data-role="cond-rounds" min="1" placeholder="rodadas" title="Duração em rodadas de combate (vazio = até remover)">
+                <button type="button" class="menu_button" data-sys-action="add-condition">Adicionar</button>
+            </div>`;
     }
 
     /** Equipamento (partes do corpo) e mochila; o item em edição vira formulário. */
@@ -713,6 +745,45 @@ export class SystemView {
                 }
                 case 'res-delta':
                     await this.system.adjustResource(this.selectedId, { resource: button.dataset.res, delta: Number(button.dataset.delta) });
+                    await this.render();
+                    break;
+                case 'rest': {
+                    const sheet = this.data.sheets.find(entry => entry.id === this.selectedId);
+                    if (!(await confirmDialog(`Descanso longo para ${sheet?.name}?`, 'Todos os recursos voltam ao máximo e as condições com duração acabam.'))) return;
+                    for (const resource of sheet.resources) {
+                        if (resource.current !== resource.max) await this.system.adjustResource(this.selectedId, { resource: resource.id, set: resource.max });
+                    }
+                    for (const condition of sheet.conditions.filter(entry => entry.rounds)) {
+                        await this.system.condition(this.selectedId, { action: 'remove', name: condition.name });
+                    }
+                    this.activity.add({ tool: 'ui_rest', ok: true, summary: `${sheet.name} descansou: recursos no máximo` });
+                    await this.render();
+                    break;
+                }
+                case 'add-condition': {
+                    const value = field => this.body.querySelector(`[data-role="${field}"]`)?.value ?? '';
+                    const name = value('cond-name').trim();
+                    if (!name) {
+                        toastr.info('Escreva o nome da condição.');
+                        return;
+                    }
+                    const target = value('cond-target');
+                    const amount = value('cond-value');
+                    if (amount !== '' && Number(amount) !== 0 && !target) {
+                        toastr.info('Escolha o que o modificador afeta.');
+                        return;
+                    }
+                    await this.system.condition(this.selectedId, {
+                        name,
+                        target: target || null,
+                        value: target && amount !== '' ? Number(amount) : 0,
+                        rounds: value('cond-rounds') === '' ? null : Number(value('cond-rounds')),
+                    });
+                    await this.render();
+                    break;
+                }
+                case 'remove-condition':
+                    await this.system.condition(this.selectedId, { action: 'remove', name: button.dataset.condition });
                     await this.render();
                     break;
                 case 'roll': {

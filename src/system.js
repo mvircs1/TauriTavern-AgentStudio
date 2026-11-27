@@ -196,6 +196,49 @@ function normalizeItem(item) {
     };
 }
 
+const MAX_CONDITIONS = 30;
+/** Alvos de condição que valem para todo teste. */
+const ALL_CHECKS = new Set(['checks', 'all', 'todos', 'tudo', 'testes', 'todos os testes', 'all checks']);
+
+function normalizeCondition(condition) {
+    const rounds = condition?.rounds === null || condition?.rounds === undefined || condition?.rounds === ''
+        ? null
+        : Math.max(0, Math.trunc(Number(condition.rounds)) || 0);
+    const value = Math.trunc(Number(condition?.value)) || 0;
+    return {
+        id: String(condition?.id ?? generateId('c')),
+        name: String(condition?.name ?? 'Condição').slice(0, MAX_NAME),
+        description: String(condition?.description ?? '').slice(0, MAX_DESCRIPTION),
+        target: value && condition?.target ? String(condition.target) : null,
+        value: condition?.target ? value : 0,
+        rounds: rounds === 0 ? null : rounds,
+    };
+}
+
+/** Condição como a IA vê: "Envenenado: -2 em Força, 3 rodadas". */
+export function conditionToolView(condition) {
+    const result = { name: condition.name };
+    if (condition.description) result.description = condition.description;
+    if (condition.value) result.effect = `${formatModifier(condition.value)} on ${condition.targetName ?? condition.target}`;
+    result.duration = condition.rounds ? `${condition.rounds} round(s) left` : 'until removed';
+    return result;
+}
+
+/** "Envenenado (-2 Força, 3 rodadas)". */
+export function conditionLabel(condition) {
+    const bits = [];
+    if (condition.value) bits.push(`${formatModifier(condition.value)} ${condition.targetName ?? condition.target}`);
+    if (condition.rounds) bits.push(`${condition.rounds} rodada${condition.rounds === 1 ? '' : 's'}`);
+    return bits.length ? `${condition.name} (${bits.join(', ')})` : condition.name;
+}
+
+const OUTCOME_PT = {
+    'CRITICAL SUCCESS': 'SUCESSO CRÍTICO',
+    SUCCESS: 'SUCESSO',
+    FAILURE: 'FALHA',
+    'CRITICAL FAILURE': 'FALHA CRÍTICA',
+};
+
 function normalizeAbility(ability) {
     const cost = ability?.cost && Number(ability.cost.amount) > 0 && ability.cost.resource
         ? { amount: Math.trunc(Number(ability.cost.amount)), resource: String(ability.cost.resource) }
@@ -224,6 +267,7 @@ function normalizeSheet(sheet) {
         training: sheet.training && typeof sheet.training === 'object' ? { ...sheet.training } : {},
         abilities: Array.isArray(sheet.abilities) ? sheet.abilities.map(normalizeAbility) : [],
         items: Array.isArray(sheet.items) ? sheet.items.map(normalizeItem) : [],
+        conditions: Array.isArray(sheet.conditions) ? sheet.conditions.map(normalizeCondition) : [],
         link: sheet.link && typeof sheet.link.book === 'string' ? { ...sheet.link } : null,
         updatedAt: sheet.updatedAt ?? null,
     };
@@ -694,17 +738,23 @@ export class SystemService {
         const itemBonus = targetId => equipped
             .filter(entry => entry.bonus?.target === targetId)
             .reduce((total, entry) => total + entry.bonus.value, 0);
+        const conditions = sheet.conditions ?? [];
+        const conditionBonus = targetId => conditions
+            .filter(entry => entry.target === targetId)
+            .reduce((total, entry) => total + entry.value, 0);
 
         const attributes = definition.attributes.map(attribute => {
             const score = Number.isFinite(sheet.attributes[attribute.id]) ? sheet.attributes[attribute.id] : definition.defaultScore;
             const count = diceCount(dice, score);
-            const rollBonus = attributeRollBonus(dice, score);
+            const fromConditions = conditionBonus(attribute.id);
+            const rollBonus = attributeRollBonus(dice, score) + fromConditions;
             return {
                 id: attribute.id,
                 name: attribute.name,
                 score,
                 modifier: modifier(score),
                 rollBonus,
+                conditionBonus: fromConditions,
                 termValue: attributeStatBonus(dice, score),
                 diceCount: count,
                 roll: formatRoll(dice, count, rollBonus),
@@ -717,7 +767,8 @@ export class SystemService {
             const level = levels.get(sheet.training?.[skill.id]) ?? null;
             const attribute = byId.get(skill.attribute) ?? null;
             const items = itemBonus(skill.id);
-            const total = (attribute?.rollBonus ?? 0) + (level?.bonus ?? 0) + bonus + items;
+            const fromConditions = conditionBonus(skill.id);
+            const total = (attribute?.rollBonus ?? 0) + (level?.bonus ?? 0) + bonus + items + fromConditions;
             const count = attribute ? attribute.diceCount : dice.fixedCount;
             return {
                 id: skill.id,
@@ -729,6 +780,7 @@ export class SystemService {
                 trainingBonus: level?.bonus ?? 0,
                 bonus,
                 itemBonus: items,
+                conditionBonus: fromConditions,
                 total,
                 diceCount: count,
                 roll: formatRoll(dice, count, total),
@@ -742,6 +794,7 @@ export class SystemService {
             const bonus = Number.isFinite(sheet.stats?.[stat.id]) ? sheet.stats[stat.id] : 0;
             const attribute = byId.get(stat.attribute) ?? null;
             const items = itemBonus(stat.id);
+            const fromConditions = conditionBonus(stat.id);
             return {
                 id: stat.id,
                 name: stat.name,
@@ -750,9 +803,10 @@ export class SystemService {
                 attributeId: attribute?.id ?? null,
                 bonus,
                 itemBonus: items,
-                total: stat.base + (attribute?.termValue ?? 0) + bonus + items,
+                conditionBonus: fromConditions,
+                total: stat.base + (attribute?.termValue ?? 0) + bonus + items + fromConditions,
                 // Ao rolar uma estatística (ex.: Iniciativa), o atributo define os dados no método "Ordem".
-                rollBonus: stat.base + (attribute?.rollBonus ?? 0) + bonus + items,
+                rollBonus: stat.base + (attribute?.rollBonus ?? 0) + bonus + items + fromConditions,
                 diceCount: attribute ? attribute.diceCount : dice.fixedCount,
                 defense: stat.defense === true,
             };
@@ -785,6 +839,15 @@ export class SystemService {
                 bonus: entry.bonus ? { target: entry.bonus.target, targetName: targetName(entry.bonus.target), value: entry.bonus.value } : null,
             };
         });
+        const conditionList = conditions.map(entry => ({
+            id: entry.id,
+            name: entry.name,
+            description: entry.description,
+            target: entry.target,
+            targetName: entry.target ? (ALL_CHECKS.has(entry.target) ? 'todos os testes' : targetName(entry.target)) : null,
+            value: entry.value,
+            rounds: entry.rounds,
+        }));
         return {
             id: sheet.id,
             name: sheet.name,
@@ -792,6 +855,8 @@ export class SystemService {
             location: item.location,
             link: sheet.link,
             notes: sheet.notes,
+            conditions: conditionList,
+            checkModifier: conditionBonus('checks'),
             attributes,
             skills,
             resources,
@@ -836,6 +901,7 @@ export class SystemService {
             if (worn.length) result.equipment[slot.name] = worn;
         }
         result.backpack = view.items.filter(entry => !entry.slot).map(itemToolView);
+        if (view.conditions.length) result.conditions = view.conditions.map(conditionToolView);
         if (view.link) result.linked_lorebook_entry = view.link;
         if (view.notes) result.notes = view.notes;
         return result;
@@ -905,6 +971,7 @@ export class SystemService {
                     };
                     const defense = view.stats.find(s => s.defense);
                     if (defense) entry.defense = `${defense.name} ${defense.total}`;
+                    if (view.conditions.length) entry.conditions = view.conditions.map(conditionLabel).join('; ');
                     if (view.abilities.length) entry.abilities = view.abilities.map(a => a.name).join(', ');
                     if (view.link) entry.linked_lorebook_entry = view.link;
                     return entry;
@@ -1060,6 +1127,33 @@ export class SystemService {
             if (indexChanged) await this.saveIndex();
             if (restored) this.emit({ type: 'undo' });
             return { restored, skipped };
+        });
+    }
+
+    /** Estado atual das fichas das entradas (para refazer ao voltar numa swipe). */
+    snapshotEntries(entries) {
+        return this.run(async () => {
+            const scope = this.scope();
+            const chatSheets = this.chatSheets(scope);
+            const result = [];
+            for (const entry of entries) {
+                if (entry.kind !== 'sheet') continue;
+                let before = null;
+                if (chatSheets[entry.id]) {
+                    before = { location: 'chat', sheet: structuredClone(chatSheets[entry.id]), indexEntry: null };
+                } else if (this.index[entry.id]) {
+                    const sheet = await this.loadStoredSheet(entry.id);
+                    if (sheet) {
+                        before = {
+                            location: this.index[entry.id].scope?.type ?? 'stored',
+                            sheet: structuredClone(sheet),
+                            indexEntry: structuredClone(this.index[entry.id]),
+                        };
+                    }
+                }
+                result.push({ key: entry.key, kind: 'sheet', id: entry.id, chatId: scope.chatId, before });
+            }
+            return result;
         });
     }
 
@@ -1222,14 +1316,15 @@ export class SystemService {
         const dice = this.definition.dice;
         const rollMode = ['advantage', 'disadvantage'].includes(mode) ? mode : 'normal';
         const situational = toInt(bonus ?? 0, 'bonus', BONUS_RANGE);
+        const subject = skill ?? attribute ?? stat;
         const flat = skill ? skill.total : attribute ? attribute.rollBonus : stat.rollBonus;
-        const count = (skill ?? attribute ?? stat).diceCount;
-        const pool = rollPool(dice, count, {
+        const allChecks = view.checkModifier ?? 0;
+        const pool = rollPool(dice, subject.diceCount, {
             mode: rollMode,
             extraDice: toInt(extraDice ?? 0, 'extra_dice', { min: -10, max: 10 }),
             rollDie: sides => this.die(sides),
         });
-        const total = pool.result + flat + situational;
+        const total = pool.result + flat + allChecks + situational;
 
         let target = dc === undefined || dc === null || dc === '' ? null : toInt(dc, 'dc', { min: 0, max: 1000 });
         let defense = null;
@@ -1241,37 +1336,90 @@ export class SystemService {
             defense = { sheet: opponentView.name, stat: defenseStat.name, value: defenseStat.total };
         }
 
+        // De onde vem cada número somado (para a IA não precisar adivinhar).
+        const parts = [];
+        if (skill) {
+            const attr = view.attributes.find(a => a.id === skill.attributeId);
+            if (attr?.rollBonus) parts.push([attr.name, attr.rollBonus]);
+            if (skill.trainingBonus) parts.push([`treino ${skill.trainingName}`, skill.trainingBonus]);
+            if (skill.bonus) parts.push(['modificador extra', skill.bonus]);
+            if (skill.itemBonus) parts.push(['itens', skill.itemBonus]);
+            if (skill.conditionBonus) parts.push(['condições', skill.conditionBonus]);
+        } else if (attribute) {
+            const base = attribute.rollBonus - attribute.conditionBonus;
+            if (base) parts.push([dice.attributeBonus === 'modifier' ? `modificador de ${attribute.name}` : attribute.name, base]);
+            if (attribute.conditionBonus) parts.push(['condições', attribute.conditionBonus]);
+        } else {
+            const attr = view.attributes.find(a => a.id === stat.attributeId);
+            if (stat.base) parts.push(['base', stat.base]);
+            if (attr?.rollBonus) parts.push([attr.name, attr.rollBonus]);
+            if (stat.bonus) parts.push(['bônus', stat.bonus]);
+            if (stat.itemBonus) parts.push(['itens', stat.itemBonus]);
+            if (stat.conditionBonus) parts.push(['condições', stat.conditionBonus]);
+        }
+        const counted = parts.reduce((sum, [, value]) => sum + value, 0);
+        if (counted !== flat) parts.push(['outros', flat - counted]);
+        if (allChecks) parts.push(['condições (todos os testes)', allChecks]);
+        if (situational) parts.push(['situacional', situational]);
+
+        const diceText = pool.keep === 'sum'
+            ? `${pool.label} [${pool.rolls.join(' + ')}] = ${pool.result}`
+            : pool.rolls.length === 1
+                ? `${pool.label}: ${pool.result}`
+                : `${pool.label} [${pool.rolls.join(', ')}] → fica ${pool.result}`;
+        const math = diceText + parts.map(([label, value]) => ` ${value < 0 ? '-' : '+'} ${Math.abs(value)} (${label})`).join('') + ` = ${total}`;
+
+        let natural = null;
+        if (pool.keep !== 'sum' && dice.sides === 20) {
+            if (pool.result === 20) natural = 20;
+            if (pool.result === 1) natural = 1;
+        }
+        let outcome = null;
+        let margin = null;
+        if (target !== null) {
+            margin = total - target;
+            outcome = total >= target
+                ? (natural === 20 ? 'CRITICAL SUCCESS' : 'SUCCESS')
+                : (natural === 1 ? 'CRITICAL FAILURE' : 'FAILURE');
+        }
+        const versusEn = defense ? `${defense.stat} ${target} of ${defense.sheet}` : `DC ${target}`;
+        const degree = margin === null ? '' : margin >= 10 ? ', a great success' : margin <= -10 ? ', a bad failure' : Math.abs(margin) <= 1 ? ', by a hair' : '';
+        const readThis = outcome
+            ? `${view.name} — ${subject.name}: ${outcome}${degree} (total ${total} vs ${versusEn}, margin ${formatModifier(margin)}). `
+                + 'This result is final: narrate exactly this outcome. Do not reroll, change or recompute the numbers.'
+            : `${view.name} — ${subject.name}: total ${total} (no DC given). Compare it with the difficulty you had in mind `
+                + '(10 easy, 15 medium, 20 hard) and narrate; do not reroll.';
+
         const result = {
-            sheet: view.name,
-            check: (skill ?? attribute ?? stat).name,
-            type: skill ? 'skill' : attribute ? 'attribute' : 'stat',
-            mode: rollMode,
-            dice: pool.label,
-            rolls: pool.rolls,
-            d20: pool.result,
-            modifier: formatModifier(flat),
+            read_this: readThis,
+            outcome: outcome ?? 'NO DC',
             total,
         };
-        if (situational) result.situational_bonus = formatModifier(situational);
         if (target !== null) {
             result.dc = target;
+            result.margin = margin;
             result.success = total >= target;
         }
         if (defense) result.against = defense;
-        if (pool.keep !== 'sum' && dice.sides === 20) {
-            if (pool.result === 20) result.natural = 20;
-            if (pool.result === 1) result.natural = 1;
-        }
+        Object.assign(result, {
+            sheet: view.name,
+            check: subject.name,
+            type: skill ? 'skill' : attribute ? 'attribute' : 'stat',
+            mode: rollMode,
+            math,
+            dice: pool.label,
+            rolls: pool.rolls,
+            kept_die: pool.result,
+            modifier: formatModifier(flat + allChecks),
+        });
+        if (dice.sides === 20 && pool.keep !== 'sum') result.d20 = pool.result;
+        if (situational) result.situational_bonus = formatModifier(situational);
+        if (natural) result.natural = natural;
 
-        const rolled = pool.rolls.length === 1 && pool.keep !== 'sum'
-            ? `d${dice.sides} ${pool.result}`
-            : `${pool.label} [${pool.rolls.join(', ')}] → ${pool.result}`;
-        const parts = [rolled, formatModifier(flat)];
-        if (situational) parts.push(formatModifier(situational));
-        const versus = defense ? ` vs ${defense.stat} ${target} de ${defense.sheet}` : target !== null ? ` vs CD ${target}` : '';
-        result.summary = `${result.check} de ${view.name}: ${parts.join(' ')} = ${total}`
-            + (target !== null ? `${versus}: ${result.success ? 'sucesso' : 'falha'}` : '')
-            + (result.natural === 20 ? ' (20 natural!)' : result.natural === 1 ? ' (1 natural!)' : '');
+        const versusPt = defense ? ` vs ${defense.stat} ${target} de ${defense.sheet}` : target !== null ? ` vs CD ${target}` : '';
+        result.summary = `${subject.name} de ${view.name}: ${math}${versusPt}`
+            + (outcome ? ` → ${OUTCOME_PT[outcome]} (margem ${formatModifier(margin)})` : '')
+            + (natural === 20 ? ' (20 natural!)' : natural === 1 ? ' (1 natural!)' : '');
         return result;
     }
 
@@ -1283,6 +1431,98 @@ export class SystemService {
             if (reason) result.reason = String(reason).slice(0, 200);
             this.emit({ type: 'roll', result });
             return result;
+        });
+    }
+
+    // ---------- condições ----------
+
+    /** Acha o alvo de uma condição: "todos os testes", ou uma perícia, atributo ou estatística. */
+    conditionTarget(reference) {
+        const raw = String(reference ?? '').normalize('NFC').trim();
+        if (!raw) return null;
+        if (ALL_CHECKS.has(normalizeName(raw))) return 'checks';
+        const definition = this.definition;
+        const found = findByName(definition.skills, raw) ?? findByName(definition.attributes, raw) ?? findByName(definition.stats, raw);
+        if (!found) {
+            const names = [...definition.skills, ...definition.attributes, ...definition.stats].map(item => item.name).join(', ');
+            throw new Error(`Unknown condition target "${raw}". Use "checks" (all checks) or a skill, attribute or stat: ${names}.`);
+        }
+        return found.id;
+    }
+
+    /** Adiciona/atualiza, remove ou limpa condições (Envenenado, Atordoado, Abençoado...). */
+    condition(reference, { action = 'add', name, description, target, value, rounds, runId } = {}) {
+        return this.run(async () => {
+            const scope = this.scope();
+            const item = await this.resolve(reference, scope);
+            const list = item.sheet.conditions ?? [];
+            const act = ['add', 'remove', 'clear'].includes(action) ? action : 'add';
+            if (act === 'clear') {
+                await this.captureSheet(runId, item, scope);
+                item.sheet.conditions = [];
+                await this.persist(item, scope);
+                return { sheet: item.sheet.name, removed: list.map(c => c.name), conditions: [] };
+            }
+            const clean = String(name ?? '').normalize('NFC').trim();
+            if (!clean) throw new Error('"name" is required (e.g. "Envenenado").');
+            const existing = findByName(list, clean);
+            if (act === 'remove') {
+                if (!existing) {
+                    throw new Error(`${item.sheet.name} has no condition "${clean}". Conditions: ${list.map(c => c.name).join(', ') || 'none'}.`);
+                }
+                await this.captureSheet(runId, item, scope);
+                item.sheet.conditions = list.filter(c => c !== existing);
+            } else {
+                if (!existing && list.length >= MAX_CONDITIONS) throw new Error(`Too many conditions (max ${MAX_CONDITIONS}).`);
+                const targetId = target === undefined || target === null || target === '' ? existing?.target ?? null : this.conditionTarget(target);
+                const amount = value === undefined || value === null || value === '' ? existing?.value ?? 0 : toInt(value, 'value', BONUS_RANGE);
+                if (amount && !targetId) throw new Error('A condition with a "value" needs a "target" ("checks" or a skill/attribute/stat).');
+                const entry = normalizeCondition({
+                    id: existing?.id,
+                    name: clean,
+                    description: description ?? existing?.description ?? '',
+                    target: targetId,
+                    value: amount,
+                    rounds: rounds === undefined ? existing?.rounds ?? null : rounds === null || rounds === '' ? null : toInt(rounds, 'rounds', { min: 0, max: 1000 }),
+                });
+                await this.captureSheet(runId, item, scope);
+                item.sheet.conditions = existing ? list.map(c => (c === existing ? entry : c)) : [...list, entry];
+            }
+            await this.persist(item, scope);
+            const view = this.view(item);
+            return {
+                sheet: view.name,
+                [act === 'remove' ? 'removed' : existing ? 'updated' : 'added']: act === 'remove' ? existing.name : clean,
+                conditions: view.conditions.map(conditionToolView),
+            };
+        });
+    }
+
+    /**
+     * Passa uma rodada para estas fichas: condições com duração perdem 1 rodada e as que chegam a 0 acabam.
+     * Devolve as condições que acabaram.
+     */
+    tickConditions(sheetIds, { runId } = {}) {
+        return this.run(async () => {
+            const scope = this.scope();
+            const expired = [];
+            for (const id of new Set(sheetIds)) {
+                let item;
+                try { item = await this.resolve(id, scope); } catch { continue; }
+                const list = item.sheet.conditions ?? [];
+                if (!list.some(c => c.rounds)) continue;
+                await this.captureSheet(runId, item, scope);
+                const next = [];
+                for (const condition of list) {
+                    if (!condition.rounds) next.push(condition);
+                    else if (condition.rounds > 1) next.push({ ...condition, rounds: condition.rounds - 1 });
+                    else expired.push({ sheet: item.sheet.name, condition: condition.name });
+                }
+                item.sheet.conditions = next;
+                await this.persist(item, scope);
+            }
+            this.emit({ type: 'sheet' });
+            return expired;
         });
     }
 
@@ -1553,6 +1793,17 @@ export class SystemService {
             }
             result.hit = hit;
             result.summary = summary.join('; ');
+            const story = [`${ability.name} used by ${view.name}${target ? ` on ${target}` : ''}`];
+            if (result.cost) story.push(`paid ${ability.cost.amount} ${ability.cost.resource} (${result.cost.before} → ${Math.max(0, result.cost.after)})`);
+            if (check) story.push(`${hit ? 'HIT' : 'MISS'}: ${check.outcome} (total ${check.total} vs ${check.against ? `${check.against.stat} ${check.dc}` : `DC ${check.dc ?? '-'}`})`);
+            if (result.effect?.total !== undefined) story.push(`effect ${result.effect.expression} rolled ${result.effect.total}`);
+            else if (result.effect?.text) story.push(`effect: ${result.effect.text}`);
+            if (result.applied?.type) {
+                story.push(`${result.applied.type === 'damage' ? 'damage' : 'healing'} applied: ${result.applied.resource} of ${result.applied.sheet} ${result.applied.before} → ${result.applied.after}/${result.applied.max}${result.applied.after === 0 ? ' (reached 0!)' : ''}`);
+            } else if (check && !hit) {
+                story.push('nothing applied');
+            }
+            result.read_this = `${story.join('; ')}. The sheets are already updated: narrate exactly this and do not apply it again.`;
             this.emit({ type: 'roll', result });
             return result;
         });

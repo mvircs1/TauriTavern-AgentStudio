@@ -2,12 +2,15 @@
 
 Add-on para o **modo Agent do [TauriTavern](https://github.com/Darkatse/TauriTavern)**, que é o SillyTavern compilado em Rust e roda no Android.
 
-O Agent Studio adiciona quatro coisas:
+O Agent Studio adiciona cinco coisas:
 
 1. **Um estúdio de arquivos próprio.** É um espaço global, compartilhado entre todos os chats e personagens, onde o Agent organiza, cria e edita arquivos: bíblias de mundo, fichas de personagem, rascunhos de lore, planos de arco, linhas do tempo. Você também pode abrir, editar e organizar tudo por um painel visual.
 2. **Edição dos lorebooks (World Info) do SillyTavern/TT.** O Agent pode listar, ler e buscar entradas, além de criar, editar e excluir entradas e criar lorebooks novos. **Antes de cada alteração, o plugin guarda um backup** do lorebook, que você pode restaurar pelo painel.
 3. **Um sistema de RPG simples, sem nível nem XP.** Tem atributos, perícias e recursos como Vida e Mana, todos editáveis. Há fichas para o jogador e para NPCs, e testes de dado com vários métodos (D&D, Ordem ou personalizado).
 4. **Um mapa do mundo** em três níveis (Mundo › Região › Local) que a IA cria e conecta enquanto narra. Só o lugar atual vai para o prompt, o que economiza tokens. Há botões para preencher ou refinar o mapa a partir dos lorebooks, com o modelo que você escolher.
+5. **Uma campanha por chat**: relógio do jogo (dia, hora, clima), rastreador de combate (iniciativa, turnos, rodadas) e diário de missões com objetivos. Um bloco curto de **estado do jogo** vai para o prompt, para a IA não esquecer nem inventar Vida, condições e de quem é a vez.
+
+E o que o Agent faz numa resposta acompanha as **swipes**: gerar outra swipe desfaz o que a anterior fez, e voltar para uma swipe antiga refaz o que ela fez.
 
 ## Requisitos
 
@@ -32,7 +35,7 @@ Para receber uma versão nova, use o botão de **atualizar** da extensão em Ext
 
 ## Configuração (uma vez)
 
-1. Em **Extensões**, abra a seção **Agent Studio**. O status deve mostrar "33 de 33 ferramentas registradas no Agent".
+1. Em **Extensões**, abra a seção **Agent Studio**. O status deve mostrar "37 de 37 ferramentas registradas no Agent".
 2. Em **Profile do Agent**, deixe selecionado **Agent Studio Writer (cópia do default-writer)** e toque em **Liberar ferramentas**.
    - O modelo só enxerga as ferramentas que estão liberadas no Profile ativo. O `default-writer` não pode ser editado, por isso o plugin cria uma cópia dele já com as ferramentas.
    - Se você já tem um Profile próprio, escolha ele na lista e libere as ferramentas nele.
@@ -54,11 +57,12 @@ Há três caminhos:
 - o comando `/studio`;
 - o botão **Abrir o estúdio** nas configurações da extensão.
 
-O painel tem seis abas:
+O painel tem sete abas:
 
 - **Arquivos**: árvore de pastas e editor, com visualização em Markdown. Para salvar, use **Ctrl+S** ou o botão. Se o Agent mudar o arquivo que você está editando, o painel avisa.
 - **Sistema**: fichas e regras do RPG, explicadas abaixo.
 - **Mapa**: mundos, lugares, conexões e onde o jogador está, explicado abaixo.
+- **Campanha**: tempo, combate e missões do chat, explicado abaixo.
 - **Backups**: cópias dos lorebooks feitas antes de cada alteração do Agent, no máximo uma por lorebook a cada run. Daqui você restaura, exporta em JSON ou faz um backup manual.
 - **Atividade**: as últimas chamadas de ferramenta do Agent e o que cada uma fez, incluindo os testes de dado.
 - **Lixeira**: arquivos excluídos, por você ou pelo Agent, que ainda podem ser restaurados.
@@ -114,6 +118,63 @@ A IA lê as descrições, então descreva cada item do jeito que você quer que 
   - Um item tem nome, quantidade, descrição e um bônus opcional numa estatística ou perícia, por exemplo colete +2 Defesa. O bônus só vale enquanto o item está equipado.
   - O ➕ cria um item, o ✏️ edita ou muda de lugar, e os botões − e + gastam ou somam a quantidade.
 
+## Testes de dados: o que a IA recebe
+
+Toda rolagem volta para a IA já resolvida, com uma frase pronta para ela seguir, por exemplo:
+
+```
+Aria — Pontaria: SUCCESS (total 27 vs DC 20, margin +7). This result is final: narrate exactly this outcome.
+```
+
+e a conta completa, com a origem de cada número:
+
+```
+2d20 (maior) [14, 7] → fica 14 + 10 (treino Veterano) + 3 (modificador extra) = 27
+```
+
+O resultado é sempre um de `SUCCESS`, `FAILURE`, `CRITICAL SUCCESS` (20 natural) ou `CRITICAL FAILURE` (1 natural), com a margem. Itens equipados e condições já entram na conta. Assim a IA não precisa somar nada nem adivinhar qual dado vale, que era onde ela se confundia. As habilidades (`ability_use`) também voltam com um resumo: acertou ou errou, quanto custou, quanto o efeito rolou e como ficou a Vida do alvo.
+
+## Condições
+
+Envenenado, Atordoado, Caído, Abençoado… Cada ficha tem uma lista de condições (aba Sistema, ou a IA com `sheet_condition`):
+
+- um **modificador** opcional em todos os testes, ou numa perícia, atributo ou estatística (Caído: −2 Defesa);
+- uma **duração** opcional em rodadas de combate. Ela diminui sozinha a cada rodada e a condição acaba quando chega a 0.
+
+O botão **Descansar** da ficha põe todos os recursos no máximo e encerra as condições com duração.
+
+## Campanha
+
+Aba **Campanha**, uma por chat:
+
+- **Tempo**: dia, hora (manhã, tarde, noite, madrugada), clima e uma nota (lua cheia, festival). Botões +10 min, +1 h, +8 h e +1 dia. A IA avança o relógio com `game_time` quando o tempo passa na história.
+- **Combate**: marque quem luta e escreva outros participantes (`Lobo 1, Lobo 2=14`, onde `=14` fixa a iniciativa). As fichas rolam a iniciativa sozinhas. A lista mostra a ordem, de quem é a vez e a Vida/condições de cada um. **Próximo turno** passa a vez e, a cada rodada nova, as condições perdem uma rodada. A IA faz o mesmo com `combat`.
+- **Missões**: título, descrição, objetivos com caixinhas, quem pediu, recompensa e um segredo só do narrador. Concluir, falhar, reabrir, editar e excluir. A IA usa `quest`.
+
+**Estado do jogo no prompt.** Antes de cada geração vai um bloco curto, por exemplo:
+
+```
+[Estado do jogo]
+Tempo: Dia 3, 14:30 (tarde) · chuva fina
+Aria: Vida 6/10, Mana 10/10 · Defesa 10 · condições: Envenenado (-2 todos os testes, 3 rodadas)
+COMBATE, rodada 1. Ordem: ▶Aria (13), Goblin (8). Vez de: Aria.
+  Goblin: Vida 10/10, Mana 10/10 · Defesa 10
+Missões ativas: Resgatar Mira (falta: Achar o porão)
+```
+
+Dá para desligar o bloco, ou só as missões, nas configurações.
+
+## Swipes: o que a IA fez acompanha a resposta
+
+O TauriTavern deixa gerar outra resposta (swipe) sem apagar a antiga. O Agent Studio guarda, para cada resposta do Agent, o que ela mudou (estúdio, lorebooks, fichas, mapa e campanha):
+
+- **Gerar uma swipe nova**: o que a resposta na tela fez é desfeito antes de gerar.
+- **Voltar para uma swipe antiga**: o que a outra fez é desfeito e o que a antiga fez é **refeito**. Uma notificação diz o que mudou.
+- **Apagar a swipe da tela**: o que ela fez some, e a swipe que fica na tela volta a valer.
+- **Regenerar**: desfaz o que todas as swipes daquela mensagem fizeram.
+
+Vale para a última mensagem do chat (onde as swipes ficam). Respostas geradas antes da v0.8 só podem ser desfeitas, não refeitas.
+
 ## Mapa
 
 Um mapa do mundo em três níveis, que a IA constrói enquanto narra:
@@ -129,7 +190,7 @@ O mapa começa vazio e **não há local inicial**: a IA cria os lugares quando a
 - **Moradores sem ficha** (taverneira, guarda) moram num lugar e só aparecem no prompt quando o jogador está lá. NPCs **com ficha** também têm posição, por chat.
 - **Lorebook por local**: vincule entradas de lorebook a um lugar. Elas são ativadas só enquanto o jogador está nele ou dentro dele. Deixe essas entradas sem palavra-chave para não aparecerem em outros lugares.
 - **Um mapa por mundo.** O chat escolhe o mundo, e o padrão é o último usado com o mesmo personagem. A posição do jogador e dos NPCs é de cada chat.
-- Ao regenerar a resposta, os lugares, conexões e movimentos feitos nela são desfeitos, como o resto.
+- Ao regenerar ou trocar de swipe, os lugares, conexões e movimentos acompanham a resposta, como o resto.
 
 **Aba Mapa** (no painel):
 
@@ -174,7 +235,8 @@ O mapa começa vazio e **não há local inicial**: a IA cria os lugares quando a
 | `sheet_item` | Dá, equipa, guarda na mochila, consome ou remove itens |
 | `ability_use` | Usa uma habilidade: paga o custo, rola o teste contra a Defesa do alvo e rola o efeito, podendo aplicar dano ou cura |
 | `sheet_delete` | Exclui a ficha de um NPC |
-| `system_roll` | Teste com o método de dados do usuário contra uma CD ou contra a Defesa de outra ficha, com vantagem ou desvantagem |
+| `system_roll` | Teste com o método de dados do usuário contra uma CD ou contra a Defesa de outra ficha, com vantagem ou desvantagem. Volta com o resultado pronto (SUCCESS/FAILURE, margem) e a conta |
+| `sheet_condition` | Põe, muda ou tira condições (modificador e duração em rodadas) |
 | `map_look` | Mostra onde o jogador está (ou outro lugar): caminho, resumo, detalhes, segredo, saídas e quem está lá |
 | `map_create` | Cria um lugar (mundo, região ou local), já com moradores, conexões e entradas de lorebook |
 | `map_update` | Muda um lugar: textos, pai, moradores, entradas de lorebook vinculadas, conhecido ou não |
@@ -182,15 +244,18 @@ O mapa começa vazio e **não há local inicial**: a IA cria os lugares quando a
 | `map_move` | Move o jogador ou um NPC (com ou sem ficha) para um lugar |
 | `map_search` | Busca lugares por nome, tipo, texto ou morador |
 | `map_delete` | Apaga um lugar (e, com `recursive`, o que tem dentro) |
+| `combat` | Começa um combate (rola a iniciativa), passa o turno, adiciona ou tira participantes, encerra |
+| `quest` | Cria, atualiza, conclui ou falha missões e objetivos |
+| `game_time` | Avança ou acerta o relógio do jogo e o clima |
 
-As configurações da extensão têm interruptores para o estúdio, a leitura de lorebooks, a edição de lorebooks, o sistema e o mapa. O mapa tem mais dois: colocar o local atual no prompt e ativar as entradas de lorebook do local.
+As configurações da extensão têm interruptores para o estúdio, a leitura de lorebooks, a edição de lorebooks, o sistema, o mapa e a campanha. O mapa tem mais dois: colocar o local atual no prompt e ativar as entradas de lorebook do local. A campanha tem mais dois: colocar o estado do jogo no prompt e incluir as missões nele.
 
 ## Onde ficam os dados
 
 - **No TauriTavern**, o estúdio, as regras, a ficha do jogador, as fichas vinculadas a lorebooks e os backups ficam na pasta de dados do app, em `_tauritavern/extension-store/agent_studio/`. Tudo isso entra no backup do próprio TT.
 - **No SillyTavern pelo navegador**, os mesmos dados ficam no IndexedDB do navegador.
 - **Os mapas** ficam no mesmo lugar, um por mundo. A posição do jogador e dos NPCs e o mundo escolhido ficam no próprio chat.
-- **Fichas de NPC do chat** ficam dentro do próprio chat (`chat_metadata`).
+- **Fichas de NPC do chat** e a **campanha** (tempo, combate, missões) ficam dentro do próprio chat (`chat_metadata`), então acompanham branches e exportações.
 
 Os lorebooks continuam sendo os arquivos normais do SillyTavern. O plugin só usa as funções oficiais de leitura e gravação.
 
@@ -202,12 +267,13 @@ Os lorebooks continuam sendo os arquivos normais do SillyTavern. O plugin só us
 - O bloco do local atual é atualizado antes de cada geração. Se a IA mover o jogador no meio de uma run, o prompt muda na próxima mensagem.
 - Auto-preencher com outro modelo precisa de um Perfil de Conexão do tipo Chat Completion.
 - Ainda não há histórico de versões dos arquivos do estúdio. Só existe a lixeira.
-- Ao regenerar uma resposta ou gerar nova swipe, o que o Agent mudou naquela resposta (arquivos, lorebooks, fichas) é desfeito automaticamente. Runs com erro ou canceladas também. Dá para desligar nas configurações.
+- Ao regenerar ou trocar de swipe, o que o Agent mudou naquela resposta (arquivos, lorebooks, fichas, mapa, campanha) é desfeito ou refeito automaticamente. Runs com erro ou canceladas são desfeitas. Dá para desligar nas configurações. Se você editar à mão algo que uma swipe também mudou e depois trocar de swipe, a troca vale mais que a sua edição.
+- O que você muda pelo painel não entra no desfazer: só o que o Agent faz.
 - A IA não edita as regras do sistema (atributos, perícias, recursos). Isso fica com você, na aba Sistema.
 
 ## Desenvolvimento
 
-- `node --test dev/core.test.mjs dev/system.test.mjs dev/skill.test.mjs dev/robust-undo.test.mjs dev/abilities.test.mjs dev/dice-items.test.mjs dev/map.test.mjs` (ou `node --test "dev/*.test.mjs"`) roda os testes da lógica: estúdio, lorebooks, backups, registro das ferramentas, sistema de RPG, mapa e Skill. Eles usam simulações do SillyTavern e da API do TauriTavern 2.4.0.
+- `node --test dev/core.test.mjs dev/system.test.mjs dev/skill.test.mjs dev/robust-undo.test.mjs dev/abilities.test.mjs dev/dice-items.test.mjs dev/map.test.mjs dev/swipes.test.mjs dev/campaign.test.mjs` (ou `node --test "dev/*.test.mjs"`) roda os testes da lógica: estúdio, lorebooks, backups, registro das ferramentas, sistema de RPG, condições, mapa, campanha, swipes e Skill. Eles usam simulações do SillyTavern e da API do TauriTavern 2.4.0.
 - Ao mudar ferramentas, atualize o `skill/agent-studio/SKILL.md` e a `version` dele. O teste da Skill falha se alguma ferramenta não estiver citada lá.
 - `dev/harness.html` é uma página de teste da interface fora do app. Para usar, sirva a pasta do projeto (por exemplo `python -m http.server`) e abra `/dev/harness.html`.
 - `docs/` guarda as anotações da pesquisa sobre o TauriTavern e o modo Agent.

@@ -326,6 +326,27 @@ export class StudioFS {
         });
     }
 
+    /** Estado atual das mesmas coisas que as entradas descrevem (para refazer ao voltar numa swipe). */
+    snapshotEntries(entries) {
+        return this.run(async () => {
+            const result = [];
+            for (const entry of entries) {
+                if (entry.kind === 'studio_file') {
+                    const meta = this.index.files[entry.id];
+                    result.push({
+                        key: entry.key,
+                        kind: 'studio_file',
+                        id: entry.id,
+                        before: meta ? { exists: true, meta: { ...meta }, text: await this.loadContent(entry.id) } : { exists: false },
+                    });
+                } else if (entry.kind === 'studio_folders') {
+                    result.push({ key: entry.key, kind: 'studio_folders', before: [...this.index.folders] });
+                }
+            }
+            return result;
+        });
+    }
+
     // ---------- operações usadas pelas ferramentas e pelo painel ----------
 
     list({ path = '', recursive = true, limit = 300 } = {}) {

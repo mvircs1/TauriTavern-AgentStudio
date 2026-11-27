@@ -98,7 +98,7 @@ describe('métodos de rolagem nas fichas', () => {
 
         const roll = await call('system_roll', { check: 'Pontaria', dc: 20 });
         assert.deepEqual([roll.dice, roll.rolls, roll.d20, roll.total, roll.success], ['2d20 (maior)', [14, 7], 14, 27, true]);
-        assert.match(roll.summary, /Pontaria de Aria: 2d20 \(maior\) \[14, 7\] → 14 \+13 = 27 vs CD 20: sucesso/);
+        assert.match(roll.summary, /Pontaria de Aria: 2d20 \(maior\) \[14, 7\] → fica 14 \+ 10 \(treino Veterano\) \+ 3 \(modificador extra\) = 27 vs CD 20 → SUCESSO \(margem \+7\)/);
 
         const info = await call('system_info', { section: 'rules' });
         assert.match(info.rules, /as many d20 as the attribute value/);

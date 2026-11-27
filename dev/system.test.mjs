@@ -157,7 +157,7 @@ describe('sistema de RPG (SystemService)', () => {
 
         const sneak = await system.roll('player', { check: 'furtividade', dc: 15 });
         assert.deepEqual([sneak.type, sneak.d20, sneak.modifier, sneak.total, sneak.success], ['skill', 14, '+4', 18, true]);
-        assert.match(sneak.summary, /Furtividade de Aria: d20 14 \+4 = 18 vs CD 15: sucesso/);
+        assert.match(sneak.summary, /Furtividade de Aria: 1d20: 14 \+ 2 \(Destreza\) \+ 2 \(modificador extra\) = 18 vs CD 15 → SUCESSO \(margem \+3\)/);
 
         const advantage = await system.roll('player', { check: 'Destreza', mode: 'advantage' });
         assert.deepEqual([advantage.rolls, advantage.d20, advantage.total], [[5, 17], 17, 19]);
@@ -167,9 +167,12 @@ describe('sistema de RPG (SystemService)', () => {
         const fumble = await system.roll('player', { check: 'Força', dc: 5 });
         assert.equal(fumble.natural, 1);
         assert.equal(fumble.success, false);
+        assert.equal(fumble.outcome, 'CRITICAL FAILURE');
         const crit = await system.roll('player', { check: 'Força' });
         assert.equal(crit.natural, 20);
         assert.equal(crit.success, undefined, 'sem CD não há sucesso/falha');
+        assert.equal(crit.outcome, 'NO DC');
+        assert.match(crit.read_this, /no DC given/);
 
         await assert.rejects(system.roll('player', { check: 'Voar' }), /Unknown check/);
     });
@@ -199,7 +202,7 @@ describe('sistema de RPG (SystemService)', () => {
         const roll = await agent.call('system_roll', { check: 'Atletismo', sheet: 'Lobo', dc: 10 });
         assert.equal(roll.total, 13);
         assert.equal(roll.success, true);
-        assert.match(activity.list()[0].summary, /Atletismo de Lobo: d20 12 \+1 = 13 vs CD 10: sucesso/);
+        assert.match(activity.list()[0].summary, /Atletismo de Lobo: 1d20: 12 \+ 1 \(Força\) = 13 vs CD 10 → SUCESSO \(margem \+3\)/);
         assert.match(activity.list()[1].summary, /Vida de Aria: 10 → 6\/10/);
     });
 
@@ -210,7 +213,7 @@ describe('sistema de RPG (SystemService)', () => {
         const profile = agent.profiles.get(STUDIO_PROFILE_ID);
         profile.tools.allow = profile.tools.allow.filter(id => !id.includes(':sheet_') && !id.includes(':system_'));
         const synced = await bridge.syncStudioProfile();
-        assert.equal(synced.added, 10);
+        assert.equal(synced.added, 11);
         assert.equal(await bridge.syncStudioProfile(), null, 'nada a fazer na segunda vez');
     });
 });

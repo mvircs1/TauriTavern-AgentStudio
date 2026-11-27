@@ -15,6 +15,7 @@ import {
 } from './util.js';
 import { SystemView } from './system-panel.js';
 import { MapView } from './map-panel.js';
+import { CampaignView } from './campaign-panel.js';
 import { confirmDialog, downloadText, promptText, renderMarkdown } from './ui.js';
 
 const REASON_LABELS = {
@@ -36,17 +37,22 @@ const TOOL_LABELS = {
     sheet_create: 'Criar ficha', sheet_update: 'Editar ficha', sheet_resource: 'Recurso', sheet_delete: 'Excluir ficha',
     map_look: 'Ver local', map_create: 'Criar lugar', map_update: 'Editar lugar', map_connect: 'Conectar lugares',
     map_move: 'Mover', map_search: 'Buscar lugar', map_delete: 'Excluir lugar', ui_map_fill: 'Mapa (preenchimento)',
+    sheet_condition: 'Condição', combat: 'Combate', quest: 'Missão', game_time: 'Tempo',
+    sheet_item: 'Item', sheet_ability: 'Habilidade', ability_use: 'Usou habilidade',
+    ui_rest: 'Descanso (você)', ui_time: 'Tempo (você)', ui_combat: 'Combate (você)',
     ui_roll: 'Teste (você)',
     undo: 'Desfeito',
 };
 
 export class StudioPanel {
-    constructor({ fs, lore, activity, system, map }) {
+    constructor({ fs, lore, activity, system, map, campaign = null }) {
         this.fs = fs;
         this.lore = lore;
         this.activity = activity;
         this.system = system;
         this.map = map;
+        this.campaign = campaign;
+        this.campaignView = null;
         this.systemView = null;
         this.mapView = null;
         this.root = null;
@@ -113,6 +119,7 @@ export class StudioPanel {
                         <button type="button" class="agst-tab" data-tab="files"><i class="fa-solid fa-folder"></i><span>Arquivos</span></button>
                         <button type="button" class="agst-tab" data-tab="system"><i class="fa-solid fa-dice-d20"></i><span>Sistema</span></button>
                         <button type="button" class="agst-tab" data-tab="map"><i class="fa-solid fa-map-location-dot"></i><span>Mapa</span></button>
+                        <button type="button" class="agst-tab" data-tab="campaign"><i class="fa-solid fa-scroll"></i><span>Campanha</span></button>
                         <button type="button" class="agst-tab" data-tab="backups"><i class="fa-solid fa-clock-rotate-left"></i><span>Backups</span></button>
                         <button type="button" class="agst-tab" data-tab="activity"><i class="fa-solid fa-list-check"></i><span>Atividade</span></button>
                         <button type="button" class="agst-tab" data-tab="trash"><i class="fa-solid fa-trash-can"></i><span>Lixeira</span></button>
@@ -161,6 +168,8 @@ export class StudioPanel {
                 <section class="agst-panel agst-system" data-panel="system" hidden></section>
 
                 <section class="agst-panel agst-system" data-panel="map" hidden></section>
+
+                <section class="agst-panel agst-system" data-panel="campaign" hidden></section>
 
                 <section class="agst-panel agst-list-panel" data-panel="backups" hidden>
                     <div class="agst-list-toolbar">
@@ -226,6 +235,21 @@ export class StudioPanel {
             });
         }
 
+        if (this.campaign) {
+            this.campaignView = new CampaignView({
+                campaign: this.campaign,
+                system: this.system,
+                activity: this.activity,
+                container: root.querySelector('[data-panel="campaign"]'),
+            });
+            this.campaignView.mount();
+            const refreshCampaign = () => {
+                if (this.isOpen() && this.tab === 'campaign') this.campaignView.refresh();
+            };
+            this.campaign.onChange(refreshCampaign);
+            this.system.onChange(refreshCampaign);
+        }
+
         this.fs.onChange(() => this.scheduleRefresh());
         this.lore.onChange(change => {
             if (change.type === 'backup' && this.isOpen() && this.tab === 'backups') this.renderBackups();
@@ -251,6 +275,7 @@ export class StudioPanel {
             files: () => this.refreshFiles(),
             system: () => this.systemView.render(),
             map: () => this.mapView?.render(),
+            campaign: () => this.campaignView?.render(),
             backups: () => this.renderBackups(),
             activity: () => this.renderActivity(),
             trash: () => this.renderTrash(),

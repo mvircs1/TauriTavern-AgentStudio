@@ -322,12 +322,12 @@ describe('lorebooks (LorebookService)', () => {
 describe('ferramentas do Agent (AgentToolBridge)', () => {
     beforeEach(installGlobals);
 
-    test('registra as 33 ferramentas com schemas portáteis e nomes válidos para o modelo', async () => {
+    test('registra as 37 ferramentas com schemas portáteis e nomes válidos para o modelo', async () => {
         const { bridge } = makeServices();
         assert.equal(bridge.isAvailable(), true);
         await bridge.registerAll();
         assert.equal(bridge.errors.length, 0, JSON.stringify(bridge.errors));
-        assert.equal(agent.tools.size, 33);
+        assert.equal(agent.tools.size, 37);
         for (const [id, tool] of agent.tools) {
             assert.match(tool.definition.name, /^[A-Za-z0-9_-]{1,64}$/);
             assert.ok(!/^(workspace|chat|skill|agent|worldinfo|dice|task)_/.test(tool.definition.name), `${id} colide com aliases nativos`);
@@ -372,7 +372,7 @@ describe('ferramentas do Agent (AgentToolBridge)', () => {
         await bridge.registerAll();
         const first = await bridge.grantToProfile(STUDIO_PROFILE_ID);
         assert.equal(first.created, true);
-        assert.equal(first.added, 33);
+        assert.equal(first.added, 37);
         const saved = agent.profiles.get(STUDIO_PROFILE_ID);
         assert.equal(saved.displayName, 'Agent Studio Writer');
         assert.ok(saved.tools.allow.includes('workspace.commit'), 'mantém as ferramentas nativas');
